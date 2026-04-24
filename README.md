@@ -77,6 +77,7 @@ Parametres:
 - `POST /quizzes/submit`
 - `GET /analysis/correlations/:mainTopic`
 - `GET /analysis/recommendations/patient/:patientId`
+- `GET /analysis/recommendations-v2/patient/:patientId`
 - `GET /fhir/questionnaire/:quizId`
 - `GET /fhir/questionnaire-response/:attemptId`
 - `POST /fhir/publish/questionnaire/:quizId`

@@ -41,4 +41,33 @@ export class AnalysisController {
   ) {
     return this.analysisService.recommendForPatient(patientId, query);
   }
+
+  @Get('recommendations-v2/patient/:patientId')
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({
+    summary: 'Recommandations quiz personnalisees avec score de pertinence et raisons',
+  })
+  @ApiParam({
+    name: 'patientId',
+    example: '6f7f0eb2-8778-48e4-b7ba-84b61be7f819',
+  })
+  @ApiQuery({
+    name: 'dominantDisease',
+    required: false,
+    enum: MedicalTopicKey,
+    example: MedicalTopicKey.CHRONIC_KIDNEY_DISEASE,
+  })
+  @ApiQuery({
+    name: 'limit',
+    required: false,
+    example: 5,
+    description: 'Nombre maximum de recommandations (1 a 20)',
+  })
+  @ApiResponse({ status: 200, description: 'Recommandations classees par pertinence' })
+  recommendForPatientV2(
+    @Param('patientId', ParseUUIDPipe) patientId: string,
+    @Query() query: RecommendationQueryDto,
+  ) {
+    return this.analysisService.recommendForPatientV2(patientId, query);
+  }
 }
