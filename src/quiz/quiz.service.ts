@@ -108,7 +108,8 @@ export class QuizService implements OnModuleInit {
       return dto.mainDisease ? relatedKeys.has(dto.mainDisease) : true;
     });
 
-    return this.applyQuestionSelection(filtered, dto.patientId);
+    const selected = await this.applyQuestionSelection(filtered, dto.patientId);
+    return this.orderQuizzesByPatientHistory(selected, dto.patientId);
   }
 
   async findOne(quizId: string): Promise<QuizEntity> {
@@ -267,21 +268,173 @@ export class QuizService implements OnModuleInit {
     return buffer;
   }
 
-  private selectQuestions(questions: QuizQuestionEntity[], seenQuestionIds: Set<string>) {
-    if (questions.length <= QuizService.QUESTIONS_PER_ATTEMPT) {
-      return questions;
+  private normalizeQuestionText(value: string): string {
+    return value
+      .toLowerCase()
+      .replace(/\(quiz\s*\d+\)/gi, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  private getQuestionSignature(question: Pick<QuizQuestionEntity, 'text' | 'options'>): string {
+    const text = this.normalizeQuestionText(question.text);
+    const options = (question.options ?? [])
+      .map((option) => this.normalizeQuestionText(option.label))
+      .sort()
+      .join('|');
+
+    return `${text}::${options}`;
+  }
+
+  private haveThemeOverlap(left: QuizTheme[], right: QuizTheme[]) {
+    if (!left.length || !right.length) {
+      return false;
     }
 
-    const unseen = questions.filter((question) => !seenQuestionIds.has(question.id));
-    const seen = questions.filter((question) => seenQuestionIds.has(question.id));
+    const rightSet = new Set(right);
+    return left.some((theme) => rightSet.has(theme));
+  }
 
-    const prioritized = this.shuffle(unseen).slice(0, QuizService.QUESTIONS_PER_ATTEMPT);
-    if (prioritized.length >= QuizService.QUESTIONS_PER_ATTEMPT) {
-      return prioritized;
+  private buildSeenSignaturesForQuiz(
+    themes: QuizTheme[],
+    seenByTheme: Map<QuizTheme, Set<string>>,
+  ): Set<string> {
+    const signatures = new Set<string>();
+    themes.forEach((theme) => {
+      const bucket = seenByTheme.get(theme);
+      bucket?.forEach((signature) => signatures.add(signature));
+    });
+    return signatures;
+  }
+
+  private appendQuestions(
+    selectedQuestions: QuizQuestionEntity[],
+    selectedSignatures: Set<string>,
+    candidates: Array<{ question: QuizQuestionEntity; signature: string }>,
+    seenSignatures: Set<string>,
+  ) {
+    const ordered = this.shuffle(candidates);
+
+    const appendPass = (includeSeen: boolean) => {
+      for (const candidate of ordered) {
+        if (selectedQuestions.length >= QuizService.QUESTIONS_PER_ATTEMPT) {
+          break;
+        }
+
+        if (selectedSignatures.has(candidate.signature)) {
+          continue;
+        }
+
+        const isSeen = seenSignatures.has(candidate.signature);
+        if (!includeSeen && isSeen) {
+          continue;
+        }
+
+        selectedQuestions.push(candidate.question);
+        selectedSignatures.add(candidate.signature);
+      }
+    };
+
+    appendPass(false);
+    appendPass(true);
+  }
+
+  private selectQuestionsForQuiz(
+    quiz: QuizEntity,
+    quizzes: QuizEntity[],
+    seenByTheme: Map<QuizTheme, Set<string>>,
+  ) {
+    const quizThemes = quiz.themes ?? [];
+    const seenSignatures = this.buildSeenSignaturesForQuiz(quizThemes, seenByTheme);
+    const allCandidates = quizzes.flatMap((sourceQuiz) =>
+      sourceQuiz.questions.map((question) => ({
+        sourceQuiz,
+        question,
+        signature: this.getQuestionSignature(question),
+      })),
+    );
+
+    const ownCandidates = allCandidates.filter((candidate) => candidate.sourceQuiz.id === quiz.id);
+    const sameThemeSameLevel = allCandidates.filter(
+      (candidate) =>
+        candidate.sourceQuiz.id !== quiz.id &&
+        candidate.sourceQuiz.level === quiz.level &&
+        this.haveThemeOverlap(candidate.sourceQuiz.themes ?? [], quizThemes),
+    );
+    const sameThemeAnyLevel = allCandidates.filter(
+      (candidate) =>
+        candidate.sourceQuiz.id !== quiz.id &&
+        this.haveThemeOverlap(candidate.sourceQuiz.themes ?? [], quizThemes),
+    );
+
+    const selectedQuestions: QuizQuestionEntity[] = [];
+    const selectedSignatures = new Set<string>();
+
+    this.appendQuestions(selectedQuestions, selectedSignatures, ownCandidates, seenSignatures);
+
+    if (selectedQuestions.length < QuizService.QUESTIONS_PER_ATTEMPT) {
+      this.appendQuestions(
+        selectedQuestions,
+        selectedSignatures,
+        sameThemeSameLevel,
+        seenSignatures,
+      );
     }
 
-    const remaining = QuizService.QUESTIONS_PER_ATTEMPT - prioritized.length;
-    return [...prioritized, ...this.shuffle(seen).slice(0, remaining)];
+    if (selectedQuestions.length < QuizService.QUESTIONS_PER_ATTEMPT) {
+      this.appendQuestions(
+        selectedQuestions,
+        selectedSignatures,
+        sameThemeAnyLevel,
+        seenSignatures,
+      );
+    }
+
+    if (selectedQuestions.length < QuizService.QUESTIONS_PER_ATTEMPT) {
+      this.appendQuestions(selectedQuestions, selectedSignatures, allCandidates, seenSignatures);
+    }
+
+    return selectedQuestions.slice(0, QuizService.QUESTIONS_PER_ATTEMPT);
+  }
+
+  private async orderQuizzesByPatientHistory(quizzes: QuizEntity[], patientId?: string) {
+    if (!patientId || quizzes.length <= 1) {
+      return quizzes;
+    }
+
+    const quizIds = quizzes.map((quiz) => quiz.id);
+    const rows = await this.attemptRepository
+      .createQueryBuilder('attempt')
+      .select('attempt.quiz_id', 'quizId')
+      .addSelect('COUNT(*)::int', 'attemptCount')
+      .addSelect('MAX(attempt.completed_at)', 'lastCompletedAt')
+      .where('attempt.patient_id = :patientId', { patientId })
+      .andWhere('attempt.status = :status', { status: QuizAttemptStatus.COMPLETED })
+      .andWhere('attempt.quiz_id IN (:...quizIds)', { quizIds })
+      .groupBy('attempt.quiz_id')
+      .getRawMany<{ quizId: string; attemptCount: string; lastCompletedAt: string | null }>();
+
+    const historyMap = new Map(
+      rows.map((row) => [
+        row.quizId,
+        {
+          count: Number(row.attemptCount),
+          lastCompletedAt: row.lastCompletedAt ? new Date(row.lastCompletedAt).getTime() : 0,
+        },
+      ]),
+    );
+
+    const shuffled = this.shuffle([...quizzes]);
+    return shuffled.sort((left, right) => {
+      const leftHistory = historyMap.get(left.id) ?? { count: 0, lastCompletedAt: 0 };
+      const rightHistory = historyMap.get(right.id) ?? { count: 0, lastCompletedAt: 0 };
+
+      if (leftHistory.count !== rightHistory.count) {
+        return leftHistory.count - rightHistory.count;
+      }
+
+      return leftHistory.lastCompletedAt - rightHistory.lastCompletedAt;
+    });
   }
 
   private async applyQuestionSelection(quizzes: QuizEntity[], patientId?: string) {
@@ -289,32 +442,38 @@ export class QuizService implements OnModuleInit {
       return quizzes;
     }
 
-    const seenByQuiz = new Map<string, Set<string>>();
+    const seenByTheme = new Map<QuizTheme, Set<string>>();
     if (patientId) {
       const quizIds = quizzes.map((quiz) => quiz.id);
-      const seenRows = await this.answerRepository
+      const seenAnswers = await this.answerRepository
         .createQueryBuilder('answer')
         .innerJoin('answer.attempt', 'attempt')
-        .innerJoin('answer.question', 'question')
-        .select('question.quiz_id', 'quizId')
-        .addSelect('answer.question_id', 'questionId')
+        .innerJoinAndSelect('answer.question', 'question')
+        .innerJoinAndSelect('question.quiz', 'quiz')
         .where('attempt.patient_id = :patientId', { patientId })
         .andWhere('attempt.status = :status', { status: QuizAttemptStatus.COMPLETED })
-        .andWhere('question.quiz_id IN (:...quizIds)', { quizIds })
-        .getRawMany<{ quizId: string; questionId: string }>();
+        .andWhere('quiz.id IN (:...quizIds)', { quizIds })
+        .getMany();
 
-      seenRows.forEach((row) => {
-        const bucket = seenByQuiz.get(row.quizId) ?? new Set<string>();
-        bucket.add(row.questionId);
-        seenByQuiz.set(row.quizId, bucket);
+      seenAnswers.forEach((answer) => {
+        const answeredQuiz = answer.question?.quiz;
+        if (!answeredQuiz) {
+          return;
+        }
+
+        const signature = this.getQuestionSignature(answer.question);
+        (answeredQuiz.themes ?? []).forEach((theme) => {
+          const bucket = seenByTheme.get(theme) ?? new Set<string>();
+          bucket.add(signature);
+          seenByTheme.set(theme, bucket);
+        });
       });
     }
 
     return quizzes.map((quiz) => {
-      const seenIds = seenByQuiz.get(quiz.id) ?? new Set<string>();
       return {
         ...quiz,
-        questions: this.selectQuestions(quiz.questions, seenIds),
+        questions: this.selectQuestionsForQuiz(quiz, quizzes, seenByTheme),
       };
     });
   }
