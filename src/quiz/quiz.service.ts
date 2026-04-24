@@ -406,34 +406,32 @@ export class QuizService implements OnModuleInit {
     const rows = await this.attemptRepository
       .createQueryBuilder('attempt')
       .select('attempt.quiz_id', 'quizId')
-      .addSelect('COUNT(*)::int', 'attemptCount')
-      .addSelect('MAX(attempt.completed_at)', 'lastCompletedAt')
+      .addSelect('COUNT(attempt.id)', 'attemptCount')
       .where('attempt.patient_id = :patientId', { patientId })
       .andWhere('attempt.status = :status', { status: QuizAttemptStatus.COMPLETED })
       .andWhere('attempt.quiz_id IN (:...quizIds)', { quizIds })
       .groupBy('attempt.quiz_id')
-      .getRawMany<{ quizId: string; attemptCount: string; lastCompletedAt: string | null }>();
+      .getRawMany<{ quizId: string; attemptCount: string }>();
 
     const historyMap = new Map(
       rows.map((row) => [
         row.quizId,
         {
           count: Number(row.attemptCount),
-          lastCompletedAt: row.lastCompletedAt ? new Date(row.lastCompletedAt).getTime() : 0,
         },
       ]),
     );
 
     const shuffled = this.shuffle([...quizzes]);
     return shuffled.sort((left, right) => {
-      const leftHistory = historyMap.get(left.id) ?? { count: 0, lastCompletedAt: 0 };
-      const rightHistory = historyMap.get(right.id) ?? { count: 0, lastCompletedAt: 0 };
+      const leftHistory = historyMap.get(left.id) ?? { count: 0 };
+      const rightHistory = historyMap.get(right.id) ?? { count: 0 };
 
       if (leftHistory.count !== rightHistory.count) {
         return leftHistory.count - rightHistory.count;
       }
 
-      return leftHistory.lastCompletedAt - rightHistory.lastCompletedAt;
+      return 0;
     });
   }
 
