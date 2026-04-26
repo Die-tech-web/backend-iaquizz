@@ -3,13 +3,16 @@ import {
   Entity,
   JoinTable,
   ManyToMany,
+  OneToOne,
   OneToMany,
   PrimaryGeneratedColumn,
   Unique,
 } from 'typeorm';
 import { BiologicalSex, PatientProfile } from '../../common/enums/patient.enum';
+import { QuizLevel } from '../../common/enums/quiz.enum';
 import { MedicalTopicEntity } from '../../icd/entities/medical-topic.entity';
 import { QuizAttemptEntity } from '../../quiz/entities/quiz-attempt.entity';
+import { PatientProgressionEntity } from '../../quiz/entities/patient-progression.entity';
 
 @Entity('patients')
 @Unique(['email'])
@@ -41,6 +44,9 @@ export class PatientEntity {
   @Column({ type: 'enum', enum: PatientProfile, default: PatientProfile.STANDARD })
   profile: PatientProfile;
 
+  @Column({ type: 'enum', enum: QuizLevel, default: QuizLevel.BEGINNER })
+  currentLevel: QuizLevel;
+
   @ManyToMany(() => MedicalTopicEntity, { eager: true })
   @JoinTable({
     name: 'patient_conditions',
@@ -51,4 +57,7 @@ export class PatientEntity {
 
   @OneToMany(() => QuizAttemptEntity, (attempt) => attempt.patient)
   attempts: QuizAttemptEntity[];
+
+  @OneToOne(() => PatientProgressionEntity, (progression) => progression.patient)
+  progression: PatientProgressionEntity;
 }

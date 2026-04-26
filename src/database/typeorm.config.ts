@@ -7,6 +7,7 @@ import { QuizEntity } from '../quiz/entities/quiz.entity';
 import { QuizQuestionEntity } from '../quiz/entities/quiz-question.entity';
 import { QuizAttemptEntity } from '../quiz/entities/quiz-attempt.entity';
 import { QuizAnswerEntity } from '../quiz/entities/quiz-answer.entity';
+import { PatientProgressionEntity } from '../quiz/entities/patient-progression.entity';
 import { PatientEntity } from '../patient/entities/patient.entity';
 
 function envToBoolean(value: string | undefined, defaultValue: boolean): boolean {
@@ -38,6 +39,7 @@ export const typeOrmConfig: TypeOrmModuleAsyncOptions = {
         QuizQuestionEntity,
         QuizAttemptEntity,
         QuizAnswerEntity,
+        PatientProgressionEntity,
         PatientEntity,
       ],
       synchronize,

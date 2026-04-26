@@ -4,8 +4,10 @@ import { IcdModule } from '../icd/icd.module';
 import { PatientModule } from '../patient/patient.module';
 import { QuizController } from './quiz.controller';
 import { QuizService } from './quiz.service';
+import { QuizLevelAdaptationService } from './quiz-level-adaptation.service';
 import { QuizAnswerEntity } from './entities/quiz-answer.entity';
 import { QuizAttemptEntity } from './entities/quiz-attempt.entity';
+import { PatientProgressionEntity } from './entities/patient-progression.entity';
 import { QuizEntity } from './entities/quiz.entity';
 import { QuizQuestionEntity } from './entities/quiz-question.entity';
 
@@ -16,12 +18,13 @@ import { QuizQuestionEntity } from './entities/quiz-question.entity';
       QuizQuestionEntity,
       QuizAttemptEntity,
       QuizAnswerEntity,
+      PatientProgressionEntity,
     ]),
     IcdModule,
     PatientModule,
   ],
   controllers: [QuizController],
-  providers: [QuizService],
+  providers: [QuizService, QuizLevelAdaptationService],
   exports: [QuizService, TypeOrmModule],
 })
 export class QuizModule {}

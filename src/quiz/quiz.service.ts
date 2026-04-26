@@ -1,4 +1,5 @@
 import {
+  ForbiddenException,
   Injectable,
   Logger,
   NotFoundException,
@@ -12,12 +13,18 @@ import { QuizEntity } from './entities/quiz.entity';
 import { QuizQuestionEntity } from './entities/quiz-question.entity';
 import { QuizAttemptEntity } from './entities/quiz-attempt.entity';
 import { QuizAnswerEntity } from './entities/quiz-answer.entity';
+import { PatientProgressionEntity } from './entities/patient-progression.entity';
+import { PatientEntity } from '../patient/entities/patient.entity';
 import { PatientService } from '../patient/patient.service';
 import { IcdService } from '../icd/icd.service';
 import {
   MedicalTopicKey,
   MedicalTopicType,
 } from '../common/enums/medical-topic.enum';
+import {
+  AdaptiveLevelDecision,
+  QuizLevelAdaptationService,
+} from './quiz-level-adaptation.service';
 import {
   QuizAttemptStatus,
   QuizLevel,
@@ -27,11 +34,46 @@ import {
 } from '../common/enums/quiz.enum';
 import { PatientProfile } from '../common/enums/patient.enum';
 
+export type QuizSubmissionResult = {
+  id: string;
+  score: number;
+  maxScore: number;
+  scoreOnTen: number;
+  status: QuizAttemptStatus;
+  completedAt: Date | null;
+  levelAtAttempt: QuizLevel;
+  currentLevel: QuizLevel;
+  nextLevel: QuizLevel | null;
+  progressionPercentage: number;
+  perfectScoresAtCurrentLevel: number;
+  requiredPerfectScoresForNextLevel: number;
+  remainingPerfectScoresToUnlock: number;
+  levelChanged: boolean;
+  previousLevel: QuizLevel | null;
+  congratulationMessage: string | null;
+};
+
+export type PatientRecommendedQuizzesResult = {
+  patientId: string;
+  currentLevel: QuizLevel;
+  nextLevel: QuizLevel | null;
+  progressionPercentage: number;
+  perfectScoresAtCurrentLevel: number;
+  requiredPerfectScoresForNextLevel: number;
+  remainingPerfectScoresToUnlock: number;
+  recommendations: QuizEntity[];
+};
+
 @Injectable()
 export class QuizService implements OnModuleInit {
   private readonly logger = new Logger(QuizService.name);
   private static readonly MIN_QUIZZES_PER_THEME = 10;
   private static readonly QUESTIONS_PER_ATTEMPT = 10;
+  private static readonly LEVEL_ORDER: QuizLevel[] = [
+    QuizLevel.BEGINNER,
+    QuizLevel.INTERMEDIATE,
+    QuizLevel.ADVANCED,
+  ];
 
   constructor(
     @InjectRepository(QuizEntity)
@@ -42,8 +84,13 @@ export class QuizService implements OnModuleInit {
     private readonly attemptRepository: Repository<QuizAttemptEntity>,
     @InjectRepository(QuizAnswerEntity)
     private readonly answerRepository: Repository<QuizAnswerEntity>,
+    @InjectRepository(PatientProgressionEntity)
+    private readonly progressionRepository: Repository<PatientProgressionEntity>,
+    @InjectRepository(PatientEntity)
+    private readonly patientRepository: Repository<PatientEntity>,
     private readonly icdService: IcdService,
     private readonly patientService: PatientService,
+    private readonly quizLevelAdaptationService: QuizLevelAdaptationService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -52,31 +99,33 @@ export class QuizService implements OnModuleInit {
   }
 
   async filter(dto: FilterQuizDto): Promise<QuizEntity[]> {
-    const qb = this.quizRepository
-      .createQueryBuilder('quiz')
-      .leftJoinAndSelect('quiz.questions', 'question')
-      .leftJoinAndSelect('quiz.mainTopic', 'mainTopic')
-      .leftJoinAndSelect('quiz.relatedTopics', 'relatedTopic')
-      .where('quiz.status = :status', { status: QuizStatus.PUBLISHED })
-      .orderBy('quiz.title', 'ASC');
+    const shouldAutoLevel = (dto.autoLevel ?? true) && !dto.level && Boolean(dto.patientId);
+    const shouldValidateManualLevel = Boolean(dto.level && dto.patientId);
+    const adaptiveDecision =
+      (shouldAutoLevel || shouldValidateManualLevel) && dto.patientId
+        ? await this.getAdaptiveLevelDecision(dto.patientId)
+        : null;
+    const effectiveLevel =
+      dto.level && adaptiveDecision
+        ? this.getAllowedRequestedLevel(dto.level, adaptiveDecision.currentLevel)
+        : dto.level ?? adaptiveDecision?.recommendedLevel;
 
-    if (dto.mainDisease) {
-      qb.andWhere('mainTopic.key = :mainDisease', { mainDisease: dto.mainDisease });
+    let quizzes = await this.findPublishedQuizzes(dto, effectiveLevel);
+    if (!quizzes.length && shouldAutoLevel && adaptiveDecision) {
+      const fallbackLevels = this.getFallbackLevels(adaptiveDecision.recommendedLevel).filter(
+        (level) => level !== adaptiveDecision.recommendedLevel,
+      );
+
+      for (const level of fallbackLevels) {
+        quizzes = await this.findPublishedQuizzes(dto, level);
+        if (quizzes.length) {
+          this.logger.warn(
+            `No quiz for adaptive level ${adaptiveDecision.recommendedLevel}. Fallback to ${level} for patient ${dto.patientId}.`,
+          );
+          break;
+        }
+      }
     }
-
-    if (dto.level) {
-      qb.andWhere('quiz.level = :level', { level: dto.level });
-    }
-
-    if (dto.themes?.length) {
-      qb.andWhere('quiz.themes && :themes', { themes: dto.themes });
-    }
-
-    if (dto.patientProfile) {
-      qb.andWhere('quiz.targetProfiles && :profiles', { profiles: [dto.patientProfile] });
-    }
-
-    const quizzes = await qb.getMany();
 
     if (!dto.mainDisease && !dto.correlatedDiseases?.length && !dto.patientId) {
       return this.applyQuestionSelection(quizzes);
@@ -112,6 +161,152 @@ export class QuizService implements OnModuleInit {
     return this.orderQuizzesByPatientHistory(selected, dto.patientId);
   }
 
+  async getAdaptiveLevelDecision(patientId: string): Promise<AdaptiveLevelDecision> {
+    await this.patientService.findById(patientId);
+    return this.resolveAdaptiveLevelDecision(patientId);
+  }
+
+  async getRecommendedQuizzesForPatient(
+    patientId: string,
+    dto: Omit<FilterQuizDto, 'patientId' | 'level' | 'autoLevel'> = {},
+  ): Promise<PatientRecommendedQuizzesResult> {
+    const patient = await this.patientService.findById(patientId);
+    const progression = await this.getAdaptiveLevelDecision(patientId);
+    const accessibleLevels = this.getAccessibleLevels(progression.currentLevel);
+    const list = await this.filter({
+      ...dto,
+      patientId,
+      autoLevel: false,
+      patientProfile: dto.patientProfile ?? patient.profile,
+    });
+    const allowed = list
+      .filter((quiz) => accessibleLevels.includes(quiz.level))
+      .sort((left, right) => {
+        const leftRank = QuizService.LEVEL_ORDER.indexOf(left.level);
+        const rightRank = QuizService.LEVEL_ORDER.indexOf(right.level);
+        if (leftRank !== rightRank) {
+          return leftRank - rightRank;
+        }
+        return left.title.localeCompare(right.title);
+      });
+
+    return {
+      patientId,
+      currentLevel: progression.currentLevel,
+      nextLevel: progression.nextLevel,
+      progressionPercentage: progression.progressionPercentage,
+      perfectScoresAtCurrentLevel: progression.perfectScoresAtCurrentLevel,
+      requiredPerfectScoresForNextLevel: progression.requiredPerfectScoresForNextLevel,
+      remainingPerfectScoresToUnlock: progression.remainingPerfectScoresToUnlock,
+      recommendations: allowed,
+    };
+  }
+
+  private async findPublishedQuizzes(
+    dto: FilterQuizDto,
+    level?: QuizLevel,
+  ): Promise<QuizEntity[]> {
+    const qb = this.quizRepository
+      .createQueryBuilder('quiz')
+      .leftJoinAndSelect('quiz.questions', 'question')
+      .leftJoinAndSelect('quiz.mainTopic', 'mainTopic')
+      .leftJoinAndSelect('quiz.relatedTopics', 'relatedTopic')
+      .where('quiz.status = :status', { status: QuizStatus.PUBLISHED })
+      .orderBy('quiz.title', 'ASC');
+
+    if (dto.mainDisease) {
+      qb.andWhere('mainTopic.key = :mainDisease', { mainDisease: dto.mainDisease });
+    }
+
+    if (level) {
+      qb.andWhere('quiz.level = :level', { level });
+    }
+
+    if (dto.themes?.length) {
+      qb.andWhere('quiz.themes && :themes', { themes: dto.themes });
+    }
+
+    if (dto.patientProfile) {
+      qb.andWhere('quiz.targetProfiles && :profiles', { profiles: [dto.patientProfile] });
+    }
+
+    return qb.getMany();
+  }
+
+  private getFallbackLevels(fromLevel: QuizLevel): QuizLevel[] {
+    const fromIndex = QuizService.LEVEL_ORDER.indexOf(fromLevel);
+    if (fromIndex <= 0) {
+      return [QuizLevel.BEGINNER];
+    }
+
+    return QuizService.LEVEL_ORDER.slice(0, fromIndex + 1).reverse();
+  }
+
+  private getAccessibleLevels(currentLevel: QuizLevel) {
+    const currentIndex = QuizService.LEVEL_ORDER.indexOf(currentLevel);
+    if (currentIndex < 0) {
+      return [QuizLevel.BEGINNER];
+    }
+    return QuizService.LEVEL_ORDER.slice(0, currentIndex + 1);
+  }
+
+  private getAllowedRequestedLevel(requested: QuizLevel, current: QuizLevel) {
+    const requestedIndex = QuizService.LEVEL_ORDER.indexOf(requested);
+    const currentIndex = QuizService.LEVEL_ORDER.indexOf(current);
+    if (requestedIndex <= currentIndex) {
+      return requested;
+    }
+    return current;
+  }
+
+  private async resolveAdaptiveLevelDecision(patientId: string): Promise<AdaptiveLevelDecision> {
+    const patient = await this.patientService.findById(patientId);
+    const progression = await this.ensurePatientProgression(patient);
+    const attempts = await this.attemptRepository.find({
+      where: {
+        patient: { id: patientId },
+        status: QuizAttemptStatus.COMPLETED,
+      },
+      order: { completedAt: 'DESC' },
+      take: 50,
+    });
+    const snapshots = attempts.map((attempt) => ({
+      levelAtAttempt: attempt.levelAtAttempt ?? attempt.quiz.level,
+      score: Number(attempt.score ?? 0),
+      maxScore: Number(attempt.maxScore ?? 10),
+      completedAt: attempt.completedAt ?? attempt.startedAt,
+    }));
+    const decision = this.quizLevelAdaptationService.decide(
+      snapshots,
+      progression.currentLevel ?? patient.currentLevel,
+    );
+
+    if (
+      progression.currentLevel !== decision.currentLevel ||
+      progression.nextLevel !== decision.nextLevel ||
+      Number(progression.progressionPercentage) !== decision.progressionPercentage ||
+      progression.perfectScoresAtCurrentLevel !== decision.perfectScoresAtCurrentLevel ||
+      progression.requiredPerfectScoresForNextLevel !== decision.requiredPerfectScoresForNextLevel
+    ) {
+      progression.currentLevel = decision.currentLevel;
+      progression.nextLevel = decision.nextLevel;
+      progression.progressionPercentage = decision.progressionPercentage;
+      progression.perfectScoresAtCurrentLevel = decision.perfectScoresAtCurrentLevel;
+      progression.requiredPerfectScoresForNextLevel = decision.requiredPerfectScoresForNextLevel;
+      progression.totalCompletedAttempts = decision.completedAttempts;
+      progression.totalPerfectScores = Object.values(decision.perfectScoresByLevel).reduce(
+        (sum, value) => sum + value,
+        0,
+      );
+      await this.progressionRepository.save(progression);
+    }
+
+    this.logger.log(
+      `Adaptive level decision for patient ${patientId}: current=${decision.currentLevel}, recommended=${decision.recommendedLevel}, attempts=${decision.completedAttempts}, progression=${decision.progressionPercentage}%`,
+    );
+    return decision;
+  }
+
   async findOne(quizId: string): Promise<QuizEntity> {
     const quiz = await this.quizRepository.findOne({
       where: { id: quizId },
@@ -125,13 +320,29 @@ export class QuizService implements OnModuleInit {
     return quiz;
   }
 
-  async submit(dto: SubmitQuizDto): Promise<QuizAttemptEntity> {
+  async submit(dto: SubmitQuizDto): Promise<QuizSubmissionResult> {
     const patient = await this.patientService.findById(dto.patientId);
     const quiz = await this.findOne(dto.quizId);
+    const patientLevelIndex = QuizService.LEVEL_ORDER.indexOf(patient.currentLevel ?? QuizLevel.BEGINNER);
+    const quizLevelIndex = QuizService.LEVEL_ORDER.indexOf(quiz.level);
+    if (quizLevelIndex > patientLevelIndex) {
+      throw new ForbiddenException(
+        `Ce quiz (${quiz.level}) n'est pas encore debloque pour ce patient (niveau actuel ${patient.currentLevel}).`,
+      );
+    }
 
-    const questions = await this.questionRepository.find({
-      where: { id: In(dto.answers.map((answer) => answer.questionId)) },
-    });
+    const levelAtAttempt = patient.currentLevel ?? QuizLevel.BEGINNER;
+    const submittedQuestionIds = dto.answers
+      .slice(0, QuizService.QUESTIONS_PER_ATTEMPT)
+      .map((answer) => answer.questionId);
+
+    const questions = submittedQuestionIds.length
+      ? await this.questionRepository
+          .createQueryBuilder('question')
+          .where('question.id IN (:...submittedQuestionIds)', { submittedQuestionIds })
+          .andWhere('question.quiz_id = :quizId', { quizId: quiz.id })
+          .getMany()
+      : [];
     const questionMap = new Map(questions.map((question) => [question.id, question]));
 
     const attempt = await this.attemptRepository.save(
@@ -139,11 +350,14 @@ export class QuizService implements OnModuleInit {
         patient,
         quiz,
         status: QuizAttemptStatus.IN_PROGRESS,
+        levelAtAttempt,
       }),
     );
 
     let totalScore = 0;
-    for (const submittedAnswer of dto.answers) {
+    let maxScore = 0;
+
+    for (const submittedAnswer of dto.answers.slice(0, QuizService.QUESTIONS_PER_ATTEMPT)) {
       const question = questionMap.get(submittedAnswer.questionId);
       if (!question) {
         continue;
@@ -151,6 +365,7 @@ export class QuizService implements OnModuleInit {
 
       const points = this.scoreAnswer(question, submittedAnswer.value);
       totalScore += points;
+      maxScore += Number(question.weight);
 
       await this.answerRepository.save(
         this.answerRepository.create({
@@ -163,10 +378,162 @@ export class QuizService implements OnModuleInit {
     }
 
     attempt.status = QuizAttemptStatus.COMPLETED;
-    attempt.score = totalScore;
+    attempt.score = Number(totalScore.toFixed(2));
+    attempt.maxScore = Number(maxScore.toFixed(2));
     attempt.completedAt = new Date();
 
-    return this.attemptRepository.save(attempt);
+    const savedAttempt = await this.attemptRepository.save(attempt);
+    const progressionUpdate = await this.updateProgressionAfterSubmission({
+      patient,
+      levelAtAttempt,
+      score: Number(savedAttempt.score ?? 0),
+      maxScore: Number(savedAttempt.maxScore ?? maxScore ?? 0),
+    });
+    const scoreOnTen =
+      progressionUpdate.maxScore > 0
+        ? Number(((progressionUpdate.score / progressionUpdate.maxScore) * 10).toFixed(2))
+        : 0;
+
+    return {
+      id: savedAttempt.id,
+      score: progressionUpdate.score,
+      maxScore: progressionUpdate.maxScore,
+      scoreOnTen,
+      status: savedAttempt.status,
+      completedAt: savedAttempt.completedAt,
+      levelAtAttempt,
+      currentLevel: progressionUpdate.currentLevel,
+      nextLevel: progressionUpdate.nextLevel,
+      progressionPercentage: progressionUpdate.progressionPercentage,
+      perfectScoresAtCurrentLevel: progressionUpdate.perfectScoresAtCurrentLevel,
+      requiredPerfectScoresForNextLevel: progressionUpdate.requiredPerfectScoresForNextLevel,
+      remainingPerfectScoresToUnlock: progressionUpdate.remainingPerfectScoresToUnlock,
+      levelChanged: progressionUpdate.levelChanged,
+      previousLevel: progressionUpdate.previousLevel,
+      congratulationMessage: progressionUpdate.congratulationMessage,
+    };
+  }
+
+  private async ensurePatientProgression(patient: PatientEntity): Promise<PatientProgressionEntity> {
+    const existing = await this.progressionRepository.findOne({
+      where: { patient: { id: patient.id } },
+    });
+    if (existing) {
+      return existing;
+    }
+
+    const attempts = await this.attemptRepository.find({
+      where: {
+        patient: { id: patient.id },
+        status: QuizAttemptStatus.COMPLETED,
+      },
+      order: { completedAt: 'DESC' },
+      take: 200,
+    });
+    const snapshots = attempts.map((attempt) => ({
+      levelAtAttempt: attempt.levelAtAttempt ?? attempt.quiz.level,
+      score: Number(attempt.score ?? 0),
+      maxScore: Number(attempt.maxScore ?? 10),
+      completedAt: attempt.completedAt ?? attempt.startedAt,
+    }));
+    const decision = this.quizLevelAdaptationService.decide(snapshots, patient.currentLevel);
+    const progression = this.progressionRepository.create({
+      patient,
+      currentLevel: decision.currentLevel,
+      nextLevel: decision.nextLevel,
+      perfectScoresAtCurrentLevel: decision.perfectScoresAtCurrentLevel,
+      requiredPerfectScoresForNextLevel: decision.requiredPerfectScoresForNextLevel,
+      progressionPercentage: decision.progressionPercentage,
+      totalCompletedAttempts: decision.completedAttempts,
+      totalPerfectScores: Object.values(decision.perfectScoresByLevel).reduce(
+        (sum, value) => sum + value,
+        0,
+      ),
+      lastLevelUpAt: null,
+    });
+    if (patient.currentLevel !== decision.currentLevel) {
+      patient.currentLevel = decision.currentLevel;
+      await this.patientRepository.save(patient);
+    }
+    return this.progressionRepository.save(progression);
+  }
+
+  private async updateProgressionAfterSubmission(params: {
+    patient: PatientEntity;
+    levelAtAttempt: QuizLevel;
+    score: number;
+    maxScore: number;
+  }) {
+    const progression = await this.ensurePatientProgression(params.patient);
+    const score = Number(params.score ?? 0);
+    const maxScore = Number(params.maxScore ?? 0);
+    const isPerfect = maxScore > 0 && score >= maxScore - 0.001;
+
+    progression.totalCompletedAttempts += 1;
+    if (isPerfect) {
+      progression.totalPerfectScores += 1;
+    }
+
+    let previousLevel: QuizLevel | null = null;
+    let congratulationMessage: string | null = null;
+    let levelChanged = false;
+
+    if (params.levelAtAttempt === progression.currentLevel && isPerfect) {
+      progression.perfectScoresAtCurrentLevel += 1;
+    }
+
+    const required = this.quizLevelAdaptationService.getRequiredPerfectScores(progression.currentLevel);
+    const next = this.quizLevelAdaptationService.getNextLevel(progression.currentLevel);
+
+    progression.requiredPerfectScoresForNextLevel = required;
+    progression.nextLevel = next;
+    progression.progressionPercentage = next
+      ? Number(
+          (
+            (Math.min(progression.perfectScoresAtCurrentLevel, required) / Math.max(required, 1)) *
+            100
+          ).toFixed(2),
+        )
+      : 100;
+
+    if (next && progression.perfectScoresAtCurrentLevel >= required) {
+      previousLevel = progression.currentLevel;
+      progression.currentLevel = next;
+      progression.nextLevel = this.quizLevelAdaptationService.getNextLevel(next);
+      progression.perfectScoresAtCurrentLevel = 0;
+      progression.requiredPerfectScoresForNextLevel =
+        this.quizLevelAdaptationService.getRequiredPerfectScores(next);
+      progression.progressionPercentage = progression.nextLevel ? 0 : 100;
+      progression.lastLevelUpAt = new Date();
+      levelChanged = true;
+      congratulationMessage = this.quizLevelAdaptationService.buildLevelUpMessage(previousLevel, next);
+    }
+
+    if (params.patient.currentLevel !== progression.currentLevel) {
+      params.patient.currentLevel = progression.currentLevel;
+      await this.patientRepository.save(params.patient);
+    }
+
+    await this.progressionRepository.save(progression);
+
+    return {
+      score,
+      maxScore,
+      currentLevel: progression.currentLevel,
+      nextLevel: progression.nextLevel,
+      progressionPercentage: Number(progression.progressionPercentage),
+      perfectScoresAtCurrentLevel: progression.perfectScoresAtCurrentLevel,
+      requiredPerfectScoresForNextLevel: progression.requiredPerfectScoresForNextLevel,
+      remainingPerfectScoresToUnlock: progression.nextLevel
+        ? Math.max(
+            progression.requiredPerfectScoresForNextLevel - progression.perfectScoresAtCurrentLevel,
+            0,
+          )
+        : 0,
+      levelChanged,
+      previousLevel,
+      congratulationMessage,
+    };
   }
 
   async findAttemptById(attemptId: string): Promise<QuizAttemptEntity> {
@@ -272,6 +639,11 @@ export class QuizService implements OnModuleInit {
     return value
       .toLowerCase()
       .replace(/\(quiz\s*\d+\)/gi, '')
+      .replace(/dans le module [^,]+,\s*/gi, '')
+      .replace(
+        /\b(au domicile|en consultation|au moment du traitement|lors du suivi mensuel|en prevention quotidienne|en phase de stabilisation|en coordination avec l equipe soignante|lors du controle biologique|en contexte de comorbidite|dans le parcours educatif)\b/gi,
+        'en contexte patient',
+      )
       .replace(/\s+/g, ' ')
       .trim();
   }
@@ -284,6 +656,13 @@ export class QuizService implements OnModuleInit {
       .join('|');
 
     return `${text}::${options}`;
+  }
+
+  private getOptionSignature(question: Pick<QuizQuestionEntity, 'options'>): string {
+    return (question.options ?? [])
+      .map((option) => this.normalizeQuestionText(option.label))
+      .sort()
+      .join('|');
   }
 
   private haveThemeOverlap(left: QuizTheme[], right: QuizTheme[]) {
@@ -310,12 +689,13 @@ export class QuizService implements OnModuleInit {
   private appendQuestions(
     selectedQuestions: QuizQuestionEntity[],
     selectedSignatures: Set<string>,
+    selectedOptionSignatures: Set<string>,
     candidates: Array<{ question: QuizQuestionEntity; signature: string }>,
     seenSignatures: Set<string>,
   ) {
     const ordered = this.shuffle(candidates);
 
-    const appendPass = (includeSeen: boolean) => {
+    const appendPass = (includeSeen: boolean, includeRepeatedOptions: boolean) => {
       for (const candidate of ordered) {
         if (selectedQuestions.length >= QuizService.QUESTIONS_PER_ATTEMPT) {
           break;
@@ -330,13 +710,21 @@ export class QuizService implements OnModuleInit {
           continue;
         }
 
+        const optionSignature = this.getOptionSignature(candidate.question);
+        if (!includeRepeatedOptions && selectedOptionSignatures.has(optionSignature)) {
+          continue;
+        }
+
         selectedQuestions.push(candidate.question);
         selectedSignatures.add(candidate.signature);
+        selectedOptionSignatures.add(optionSignature);
       }
     };
 
-    appendPass(false);
-    appendPass(true);
+    appendPass(false, false);
+    appendPass(false, true);
+    appendPass(true, false);
+    appendPass(true, true);
   }
 
   private selectQuestionsForQuiz(
@@ -369,13 +757,21 @@ export class QuizService implements OnModuleInit {
 
     const selectedQuestions: QuizQuestionEntity[] = [];
     const selectedSignatures = new Set<string>();
+    const selectedOptionSignatures = new Set<string>();
 
-    this.appendQuestions(selectedQuestions, selectedSignatures, ownCandidates, seenSignatures);
+    this.appendQuestions(
+      selectedQuestions,
+      selectedSignatures,
+      selectedOptionSignatures,
+      ownCandidates,
+      seenSignatures,
+    );
 
     if (selectedQuestions.length < QuizService.QUESTIONS_PER_ATTEMPT) {
       this.appendQuestions(
         selectedQuestions,
         selectedSignatures,
+        selectedOptionSignatures,
         sameThemeSameLevel,
         seenSignatures,
       );
@@ -385,13 +781,20 @@ export class QuizService implements OnModuleInit {
       this.appendQuestions(
         selectedQuestions,
         selectedSignatures,
+        selectedOptionSignatures,
         sameThemeAnyLevel,
         seenSignatures,
       );
     }
 
     if (selectedQuestions.length < QuizService.QUESTIONS_PER_ATTEMPT) {
-      this.appendQuestions(selectedQuestions, selectedSignatures, allCandidates, seenSignatures);
+      this.appendQuestions(
+        selectedQuestions,
+        selectedSignatures,
+        selectedOptionSignatures,
+        allCandidates,
+        seenSignatures,
+      );
     }
 
     return selectedQuestions.slice(0, QuizService.QUESTIONS_PER_ATTEMPT);
@@ -442,7 +845,6 @@ export class QuizService implements OnModuleInit {
 
     const seenByTheme = new Map<QuizTheme, Set<string>>();
     if (patientId) {
-      const quizIds = quizzes.map((quiz) => quiz.id);
       const seenAnswers = await this.answerRepository
         .createQueryBuilder('answer')
         .innerJoin('answer.attempt', 'attempt')
@@ -450,7 +852,6 @@ export class QuizService implements OnModuleInit {
         .innerJoinAndSelect('question.quiz', 'quiz')
         .where('attempt.patient_id = :patientId', { patientId })
         .andWhere('attempt.status = :status', { status: QuizAttemptStatus.COMPLETED })
-        .andWhere('quiz.id IN (:...quizIds)', { quizIds })
         .getMany();
 
       seenAnswers.forEach((answer) => {
@@ -1201,6 +1602,57 @@ export class QuizService implements OnModuleInit {
       },
     ];
 
+    const buildThemeQuestions = (blueprint: (typeof themeBlueprints)[number], series: number) => {
+      const scenarioLabels = [
+        'au domicile',
+        'en consultation',
+        'au moment du traitement',
+        'lors du suivi mensuel',
+        'en prevention quotidienne',
+        'en phase de stabilisation',
+        'en coordination avec l equipe soignante',
+        'lors du controle biologique',
+        'en contexte de comorbidite',
+        'dans le parcours educatif',
+      ];
+      const scenario = scenarioLabels[(series - 1) % scenarioLabels.length];
+
+      return [
+        {
+          linkId: 'q1',
+          text: `${blueprint.questionText} (Quiz ${series})`,
+          type: QuizQuestionType.SINGLE_CHOICE,
+          weight: 1,
+          options: [
+            { code: 'A', label: blueprint.correctLabel, isCorrect: true },
+            { code: 'B', label: blueprint.wrongA, isCorrect: false },
+            { code: 'C', label: blueprint.wrongB, isCorrect: false },
+          ],
+        },
+        {
+          linkId: 'q2',
+          text: `Dans le module ${blueprint.title.toLowerCase()}, quel choix est le plus adapte ${scenario} ? (Quiz ${series})`,
+          type: QuizQuestionType.SINGLE_CHOICE,
+          weight: 1,
+          options: [
+            { code: 'A', label: blueprint.correctLabel, isCorrect: true },
+            { code: 'B', label: blueprint.wrongA, isCorrect: false },
+            { code: 'C', label: 'Attendre sans suivi structure', isCorrect: false },
+          ],
+        },
+        {
+          linkId: 'q3',
+          text: `Vrai ou faux: ${blueprint.wrongA.toLowerCase()} est une bonne pratique. (Quiz ${series})`,
+          type: QuizQuestionType.BOOLEAN,
+          weight: 1,
+          options: [
+            { code: 'TRUE', label: 'Vrai', isCorrect: false },
+            { code: 'FALSE', label: 'Faux', isCorrect: true },
+          ],
+        },
+      ];
+    };
+
     const generatedThemeTemplates = themeBlueprints.flatMap((blueprint) =>
       Array.from({ length: 10 }, (_, index) => {
         const series = index + 1;
@@ -1220,19 +1672,7 @@ export class QuizService implements OnModuleInit {
           supportsDialysisContext: blueprint.supportsDialysisContext,
           mainTopic: blueprint.mainTopic,
           relatedTopics: allRelatedTopics,
-          questions: [
-            {
-              linkId: 'q1',
-              text: `${blueprint.questionText} (Quiz ${series})`,
-              type: QuizQuestionType.SINGLE_CHOICE,
-              weight: 1,
-              options: [
-                { code: 'A', label: blueprint.correctLabel, isCorrect: true },
-                { code: 'B', label: blueprint.wrongA, isCorrect: false },
-                { code: 'C', label: blueprint.wrongB, isCorrect: false },
-              ],
-            },
-          ],
+          questions: buildThemeQuestions(blueprint, series),
         };
       }),
     );
@@ -1249,6 +1689,44 @@ export class QuizService implements OnModuleInit {
     if (quizzesToCreate.length > 0) {
       await this.quizRepository.save(quizzesToCreate);
       this.logger.log(`${quizzesToCreate.length} quiz templates seeded`);
+    }
+
+    const generatedSlugs = generatedThemeTemplates.map((template) => template.slug);
+    const generatedTemplateBySlug = new Map(
+      generatedThemeTemplates.map((template) => [template.slug, template] as const),
+    );
+    const generatedSeriesQuizzes = await this.quizRepository.find({
+      where: { slug: In(generatedSlugs) },
+      relations: { questions: true },
+    });
+
+    const generatedQuestionsToCreate: QuizQuestionEntity[] = [];
+    generatedSeriesQuizzes.forEach((generatedQuiz) => {
+      const template = generatedTemplateBySlug.get(generatedQuiz.slug);
+      if (!template) {
+        return;
+      }
+
+      const existingLinkIds = new Set(generatedQuiz.questions.map((question) => question.linkId));
+      template.questions.forEach((questionTemplate) => {
+        if (existingLinkIds.has(questionTemplate.linkId)) {
+          return;
+        }
+
+        generatedQuestionsToCreate.push(
+          this.questionRepository.create({
+            ...questionTemplate,
+            quiz: generatedQuiz,
+          }),
+        );
+      });
+    });
+
+    if (generatedQuestionsToCreate.length > 0) {
+      await this.questionRepository.save(generatedQuestionsToCreate);
+      this.logger.log(
+        `Theme-series question banks upgraded with ${generatedQuestionsToCreate.length} additional questions`,
+      );
     }
 
     const renalTemplate = templates.find((template) => template.slug === 'module-renal-quiz-principal');

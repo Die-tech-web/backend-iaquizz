@@ -86,6 +86,7 @@ export class AuthService {
         firstName: patient.firstName,
         lastName: patient.lastName,
         profile: patient.profile,
+        currentLevel: patient.currentLevel,
       },
     };
   }

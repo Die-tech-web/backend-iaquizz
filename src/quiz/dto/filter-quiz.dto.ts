@@ -1,5 +1,5 @@
 import { Transform } from 'class-transformer';
-import { IsArray, IsEnum, IsOptional, IsUUID } from 'class-validator';
+import { IsArray, IsBoolean, IsEnum, IsOptional, IsUUID } from 'class-validator';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { MedicalTopicKey } from '../../common/enums/medical-topic.enum';
 import { PatientProfile } from '../../common/enums/patient.enum';
@@ -18,6 +18,19 @@ const toArray = ({ value }: { value: unknown }): string[] | undefined => {
     .split(',')
     .map((item) => item.trim())
     .filter(Boolean);
+};
+
+const toBoolean = ({ value }: { value: unknown }): boolean | undefined => {
+  if (value === undefined || value === null || value === '') {
+    return undefined;
+  }
+
+  if (typeof value === 'boolean') {
+    return value;
+  }
+
+  const normalized = String(value).toLowerCase();
+  return ['1', 'true', 'yes', 'on'].includes(normalized);
 };
 
 export class FilterQuizDto {
@@ -67,4 +80,15 @@ export class FilterQuizDto {
   @IsOptional()
   @IsUUID()
   patientId?: string;
+
+  @ApiPropertyOptional({
+    example: true,
+    default: true,
+    description:
+      'Si true (par defaut), le backend calcule automatiquement le niveau recommande selon les quiz completes et les scores du patient.',
+  })
+  @IsOptional()
+  @Transform(toBoolean)
+  @IsBoolean()
+  autoLevel?: boolean;
 }
