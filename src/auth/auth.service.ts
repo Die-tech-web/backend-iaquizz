@@ -11,6 +11,10 @@ import { PatientEntity } from '../patient/entities/patient.entity';
 import { RegisterPatientDto } from './dto/register-patient.dto';
 import { LoginDto } from './dto/login.dto';
 import { IcdService } from '../icd/icd.service';
+import {
+  DEFAULT_PATIENT_LANGUAGE,
+  resolvePatientLanguage,
+} from '../common/enums/language.enum';
 
 @Injectable()
 export class AuthService {
@@ -43,6 +47,7 @@ export class AuthService {
         birthDate: dto.birthDate,
         sex: dto.sex,
         profile: dto.profile,
+        preferredLanguage: dto.preferredLanguage ?? DEFAULT_PATIENT_LANGUAGE,
         conditions: conditionKeys
           .map((key) => conditionMap.get(key))
           .filter((item): item is NonNullable<typeof item> => Boolean(item)),
@@ -87,6 +92,7 @@ export class AuthService {
         lastName: patient.lastName,
         profile: patient.profile,
         currentLevel: patient.currentLevel,
+        preferredLanguage: resolvePatientLanguage(patient.preferredLanguage),
       },
     };
   }

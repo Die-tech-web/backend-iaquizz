@@ -43,7 +43,7 @@ export class FhirService {
       ],
       item: quiz.questions.map((question) => ({
         linkId: question.linkId,
-        text: question.text,
+        text: question.promptText ?? question.text,
         type:
           question.type === QuizQuestionType.BOOLEAN ? 'boolean' : 'choice',
         answerOption: question.options.map((option) => ({

@@ -1,5 +1,9 @@
 import { Column, Entity, JoinColumn, ManyToOne, OneToMany, PrimaryGeneratedColumn } from 'typeorm';
 import { QuizAttemptStatus, QuizLevel } from '../../common/enums/quiz.enum';
+import {
+  DEFAULT_PATIENT_LANGUAGE,
+  PatientLanguage,
+} from '../../common/enums/language.enum';
 import { PatientEntity } from '../../patient/entities/patient.entity';
 import { QuizEntity } from './quiz.entity';
 import { QuizAnswerEntity } from './quiz-answer.entity';
@@ -30,6 +34,9 @@ export class QuizAttemptEntity {
 
   @Column({ type: 'enum', enum: QuizLevel, default: QuizLevel.BEGINNER })
   levelAtAttempt: QuizLevel;
+
+  @Column({ type: 'enum', enum: PatientLanguage, default: DEFAULT_PATIENT_LANGUAGE })
+  language: PatientLanguage;
 
   @Column({ type: 'numeric', precision: 5, scale: 2, nullable: true })
   score: number | null;

@@ -4,6 +4,7 @@ import { Repository } from 'typeorm';
 import { PatientEntity } from './entities/patient.entity';
 import { CreatePatientDto } from './dto/create-patient.dto';
 import { IcdService } from '../icd/icd.service';
+import { PatientLanguage, resolvePatientLanguage } from '../common/enums/language.enum';
 
 @Injectable()
 export class PatientService {
@@ -38,5 +39,15 @@ export class PatientService {
     }
 
     return patient;
+  }
+
+  async updatePreferredLanguage(id: string, preferredLanguage: PatientLanguage) {
+    const patient = await this.findById(id);
+    patient.preferredLanguage = resolvePatientLanguage(preferredLanguage);
+    const saved = await this.patientRepository.save(patient);
+    return {
+      id: saved.id,
+      preferredLanguage: saved.preferredLanguage,
+    };
   }
 }

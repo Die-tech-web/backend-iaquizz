@@ -1,4 +1,14 @@
-import { Body, Controller, Get, Param, ParseUUIDPipe, Post, Query } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  DefaultValuePipe,
+  Get,
+  Param,
+  ParseEnumPipe,
+  ParseUUIDPipe,
+  Post,
+  Query,
+} from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiBody,
@@ -15,6 +25,7 @@ import { MedicalTopicKey } from '../common/enums/medical-topic.enum';
 import { PatientProfile } from '../common/enums/patient.enum';
 import { QuizLevel } from '../common/enums/quiz.enum';
 import { Public } from '../common/decorators/public.decorator';
+import { PatientLanguage } from '../common/enums/language.enum';
 
 @ApiTags('Quizzes')
 @Controller('quizzes')
@@ -44,6 +55,12 @@ export class QuizController {
     name: 'patientId',
     required: false,
     example: '6f7f0eb2-8778-48e4-b7ba-84b61be7f819',
+  })
+  @ApiQuery({
+    name: 'lang',
+    required: false,
+    enum: PatientLanguage,
+    description: 'Langue de restitution des contenus quiz (fallback FR si indisponible).',
   })
   @ApiResponse({ status: 200, description: 'Liste des quiz filtres' })
   filter(@Query() dto: FilterQuizDto) {
@@ -75,6 +92,12 @@ export class QuizController {
   @ApiParam({ name: 'patientId', example: '6f7f0eb2-8778-48e4-b7ba-84b61be7f819' })
   @ApiQuery({ name: 'mainDisease', required: false, enum: MedicalTopicKey })
   @ApiQuery({ name: 'themes', required: false, example: 'FOLLOW_UP,NUTRITION' })
+  @ApiQuery({
+    name: 'lang',
+    required: false,
+    enum: PatientLanguage,
+    description: 'Langue de restitution des contenus quiz recommandes.',
+  })
   @ApiResponse({
     status: 200,
     description:
@@ -103,9 +126,23 @@ export class QuizController {
   @Public()
   @ApiOperation({ summary: 'Recuperer un quiz par UUID' })
   @ApiParam({ name: 'id', example: '73f34f27-e58f-4a98-9b4c-a80d6990edfd' })
+  @ApiQuery({
+    name: 'lang',
+    required: false,
+    enum: PatientLanguage,
+    description: 'Langue de restitution du quiz (fallback FR).',
+  })
   @ApiResponse({ status: 200, description: 'Quiz trouve' })
-  findOne(@Param('id', ParseUUIDPipe) id: string) {
-    return this.quizService.findOne(id);
+  findOne(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Query(
+      'lang',
+      new DefaultValuePipe(PatientLanguage.FR),
+      new ParseEnumPipe(PatientLanguage),
+    )
+    lang: PatientLanguage,
+  ) {
+    return this.quizService.findOne(id, lang);
   }
 
   @Post('submit')

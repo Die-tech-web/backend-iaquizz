@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, ParseUUIDPipe, Post } from '@nestjs/common';
+import { Body, Controller, Get, Param, ParseUUIDPipe, Patch, Post } from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiBody,
@@ -9,6 +9,7 @@ import {
 } from '@nestjs/swagger';
 import { PatientService } from './patient.service';
 import { CreatePatientDto } from './dto/create-patient.dto';
+import { UpdatePreferredLanguageDto } from './dto/update-preferred-language.dto';
 
 @ApiTags('Patients')
 @ApiBearerAuth('JWT-auth')
@@ -40,5 +41,20 @@ export class PatientController {
   @ApiResponse({ status: 200, description: 'Patient trouve' })
   findOne(@Param('id', ParseUUIDPipe) id: string) {
     return this.patientService.findById(id);
+  }
+
+  @Patch(':id/preferred-language')
+  @ApiOperation({ summary: 'Mettre a jour la langue preferee du patient' })
+  @ApiParam({
+    name: 'id',
+    example: '6f7f0eb2-8778-48e4-b7ba-84b61be7f819',
+  })
+  @ApiBody({ type: UpdatePreferredLanguageDto })
+  @ApiResponse({ status: 200, description: 'Langue preferee mise a jour' })
+  updatePreferredLanguage(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdatePreferredLanguageDto,
+  ) {
+    return this.patientService.updatePreferredLanguage(id, dto.preferredLanguage);
   }
 }

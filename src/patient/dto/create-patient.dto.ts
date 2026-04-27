@@ -2,6 +2,7 @@ import { IsArray, IsDateString, IsEnum, IsOptional, IsString } from 'class-valid
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { MedicalTopicKey } from '../../common/enums/medical-topic.enum';
 import { BiologicalSex, PatientProfile } from '../../common/enums/patient.enum';
+import { PatientLanguage } from '../../common/enums/language.enum';
 
 export class CreatePatientDto {
   @ApiPropertyOptional({ example: 'AKA-001' })
@@ -31,6 +32,11 @@ export class CreatePatientDto {
   @IsOptional()
   @IsEnum(PatientProfile)
   profile?: PatientProfile;
+
+  @ApiPropertyOptional({ enum: PatientLanguage, example: PatientLanguage.FR })
+  @IsOptional()
+  @IsEnum(PatientLanguage)
+  preferredLanguage?: PatientLanguage;
 
   @ApiPropertyOptional({
     enum: MedicalTopicKey,

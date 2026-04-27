@@ -5,6 +5,7 @@ import { PatientModule } from '../patient/patient.module';
 import { QuizController } from './quiz.controller';
 import { QuizService } from './quiz.service';
 import { QuizLevelAdaptationService } from './quiz-level-adaptation.service';
+import { QuizLocalizationService } from './quiz-localization.service';
 import { QuizAnswerEntity } from './entities/quiz-answer.entity';
 import { QuizAttemptEntity } from './entities/quiz-attempt.entity';
 import { PatientProgressionEntity } from './entities/patient-progression.entity';
@@ -24,7 +25,7 @@ import { QuizQuestionEntity } from './entities/quiz-question.entity';
     PatientModule,
   ],
   controllers: [QuizController],
-  providers: [QuizService, QuizLevelAdaptationService],
+  providers: [QuizService, QuizLevelAdaptationService, QuizLocalizationService],
   exports: [QuizService, TypeOrmModule],
 })
 export class QuizModule {}

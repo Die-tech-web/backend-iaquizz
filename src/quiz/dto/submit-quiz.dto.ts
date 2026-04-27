@@ -1,13 +1,16 @@
 import {
   ArrayMinSize,
   IsArray,
+  IsEnum,
   IsNotEmpty,
+  IsOptional,
   IsString,
   IsUUID,
   ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ApiProperty } from '@nestjs/swagger';
+import { PatientLanguage } from '../../common/enums/language.enum';
 
 export class SubmittedAnswerDto {
   @ApiProperty({ example: 'b31da2f2-649e-4ca1-ac75-d0f275c9ff5f' })
@@ -47,4 +50,9 @@ export class SubmitQuizDto {
   @IsString()
   @IsNotEmpty()
   submittedBy: string;
+
+  @ApiProperty({ enum: PatientLanguage, required: false, example: PatientLanguage.FR })
+  @IsEnum(PatientLanguage)
+  @IsOptional()
+  language?: PatientLanguage;
 }

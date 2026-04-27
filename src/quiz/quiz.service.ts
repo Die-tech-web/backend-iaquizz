@@ -33,9 +33,15 @@ import {
   QuizTheme,
 } from '../common/enums/quiz.enum';
 import { PatientProfile } from '../common/enums/patient.enum';
+import {
+  PatientLanguage,
+  resolvePatientLanguage,
+} from '../common/enums/language.enum';
+import { QuizLocalizationService } from './quiz-localization.service';
 
 export type QuizSubmissionResult = {
   id: string;
+  language: PatientLanguage;
   score: number;
   maxScore: number;
   scoreOnTen: number;
@@ -91,6 +97,7 @@ export class QuizService implements OnModuleInit {
     private readonly icdService: IcdService,
     private readonly patientService: PatientService,
     private readonly quizLevelAdaptationService: QuizLevelAdaptationService,
+    private readonly quizLocalizationService: QuizLocalizationService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -128,7 +135,8 @@ export class QuizService implements OnModuleInit {
     }
 
     if (!dto.mainDisease && !dto.correlatedDiseases?.length && !dto.patientId) {
-      return this.applyQuestionSelection(quizzes);
+      const selectedWithoutSignals = await this.applyQuestionSelection(quizzes);
+      return this.quizLocalizationService.localizeQuizzes(selectedWithoutSignals, dto.lang);
     }
 
     const enrichedCorrelations = new Set<MedicalTopicKey>(dto.correlatedDiseases ?? []);
@@ -158,7 +166,8 @@ export class QuizService implements OnModuleInit {
     });
 
     const selected = await this.applyQuestionSelection(filtered, dto.patientId);
-    return this.orderQuizzesByPatientHistory(selected, dto.patientId);
+    const ordered = await this.orderQuizzesByPatientHistory(selected, dto.patientId);
+    return this.quizLocalizationService.localizeQuizzes(ordered, dto.lang);
   }
 
   async getAdaptiveLevelDecision(patientId: string): Promise<AdaptiveLevelDecision> {
@@ -307,7 +316,7 @@ export class QuizService implements OnModuleInit {
     return decision;
   }
 
-  async findOne(quizId: string): Promise<QuizEntity> {
+  async findOne(quizId: string, lang?: PatientLanguage): Promise<QuizEntity> {
     const quiz = await this.quizRepository.findOne({
       where: { id: quizId },
       relations: { questions: true, mainTopic: true, relatedTopics: true },
@@ -317,7 +326,7 @@ export class QuizService implements OnModuleInit {
       throw new NotFoundException(`Quiz ${quizId} not found`);
     }
 
-    return quiz;
+    return this.quizLocalizationService.localizeQuiz(quiz, lang);
   }
 
   async submit(dto: SubmitQuizDto): Promise<QuizSubmissionResult> {
@@ -345,12 +354,15 @@ export class QuizService implements OnModuleInit {
       : [];
     const questionMap = new Map(questions.map((question) => [question.id, question]));
 
+    const language = resolvePatientLanguage(dto.language ?? patient.preferredLanguage);
+
     const attempt = await this.attemptRepository.save(
       this.attemptRepository.create({
         patient,
         quiz,
         status: QuizAttemptStatus.IN_PROGRESS,
         levelAtAttempt,
+        language,
       }),
     );
 
@@ -396,6 +408,7 @@ export class QuizService implements OnModuleInit {
 
     return {
       id: savedAttempt.id,
+      language: savedAttempt.language,
       score: progressionUpdate.score,
       maxScore: progressionUpdate.maxScore,
       scoreOnTen,
@@ -641,6 +654,10 @@ export class QuizService implements OnModuleInit {
       .replace(/\(quiz\s*\d+\)/gi, '')
       .replace(/dans le module [^,]+,\s*/gi, '')
       .replace(
+        /\b(apres apparition d un oedeme des membres inferieurs|face a une prise de poids rapide|quand les resultats biologiques evoluent|avant le renouvellement du traitement|durant une semaine de fatigue persistante|apres un oubli de medicament|en presence de crampes nocturnes|apres un ecart alimentaire notable|devant une tension arterielle elevee|lors d un essoufflement inhabituel)\b/gi,
+        'en contexte patient',
+      )
+      .replace(
         /\b(au domicile|en consultation|au moment du traitement|lors du suivi mensuel|en prevention quotidienne|en phase de stabilisation|en coordination avec l equipe soignante|lors du controle biologique|en contexte de comorbidite|dans le parcours educatif)\b/gi,
         'en contexte patient',
       )
@@ -648,10 +665,15 @@ export class QuizService implements OnModuleInit {
       .trim();
   }
 
-  private getQuestionSignature(question: Pick<QuizQuestionEntity, 'text' | 'options'>): string {
+  private getQuestionSignature(
+    question: Pick<QuizQuestionEntity, 'text' | 'options'>,
+  ): string {
     const text = this.normalizeQuestionText(question.text);
     const options = (question.options ?? [])
-      .map((option) => this.normalizeQuestionText(option.label))
+      .map((option) => {
+        const label = this.normalizeQuestionText(option.label);
+        return label;
+      })
       .sort()
       .join('|');
 
@@ -660,7 +682,10 @@ export class QuizService implements OnModuleInit {
 
   private getOptionSignature(question: Pick<QuizQuestionEntity, 'options'>): string {
     return (question.options ?? [])
-      .map((option) => this.normalizeQuestionText(option.label))
+      .map((option) => {
+        const label = this.normalizeQuestionText(option.label);
+        return label;
+      })
       .sort()
       .join('|');
   }
@@ -692,39 +717,35 @@ export class QuizService implements OnModuleInit {
     selectedOptionSignatures: Set<string>,
     candidates: Array<{ question: QuizQuestionEntity; signature: string }>,
     seenSignatures: Set<string>,
+    options?: { includeSeen?: boolean; includeRepeatedOptions?: boolean },
   ) {
     const ordered = this.shuffle(candidates);
+    const includeSeen = options?.includeSeen ?? false;
+    const includeRepeatedOptions = options?.includeRepeatedOptions ?? false;
 
-    const appendPass = (includeSeen: boolean, includeRepeatedOptions: boolean) => {
-      for (const candidate of ordered) {
-        if (selectedQuestions.length >= QuizService.QUESTIONS_PER_ATTEMPT) {
-          break;
-        }
-
-        if (selectedSignatures.has(candidate.signature)) {
-          continue;
-        }
-
-        const isSeen = seenSignatures.has(candidate.signature);
-        if (!includeSeen && isSeen) {
-          continue;
-        }
-
-        const optionSignature = this.getOptionSignature(candidate.question);
-        if (!includeRepeatedOptions && selectedOptionSignatures.has(optionSignature)) {
-          continue;
-        }
-
-        selectedQuestions.push(candidate.question);
-        selectedSignatures.add(candidate.signature);
-        selectedOptionSignatures.add(optionSignature);
+    for (const candidate of ordered) {
+      if (selectedQuestions.length >= QuizService.QUESTIONS_PER_ATTEMPT) {
+        break;
       }
-    };
 
-    appendPass(false, false);
-    appendPass(false, true);
-    appendPass(true, false);
-    appendPass(true, true);
+      if (selectedSignatures.has(candidate.signature)) {
+        continue;
+      }
+
+      const isSeen = seenSignatures.has(candidate.signature);
+      if (!includeSeen && isSeen) {
+        continue;
+      }
+
+      const optionSignature = this.getOptionSignature(candidate.question);
+      if (!includeRepeatedOptions && selectedOptionSignatures.has(optionSignature)) {
+        continue;
+      }
+
+      selectedQuestions.push(candidate.question);
+      selectedSignatures.add(candidate.signature);
+      selectedOptionSignatures.add(optionSignature);
+    }
   }
 
   private selectQuestionsForQuiz(
@@ -758,43 +779,34 @@ export class QuizService implements OnModuleInit {
     const selectedQuestions: QuizQuestionEntity[] = [];
     const selectedSignatures = new Set<string>();
     const selectedOptionSignatures = new Set<string>();
+    const candidatePools = [ownCandidates, sameThemeSameLevel, sameThemeAnyLevel, allCandidates];
 
-    this.appendQuestions(
-      selectedQuestions,
-      selectedSignatures,
-      selectedOptionSignatures,
-      ownCandidates,
-      seenSignatures,
-    );
+    const phases: Array<{ includeSeen: boolean; includeRepeatedOptions: boolean }> = [
+      { includeSeen: false, includeRepeatedOptions: false },
+      { includeSeen: false, includeRepeatedOptions: true },
+      { includeSeen: true, includeRepeatedOptions: false },
+      { includeSeen: true, includeRepeatedOptions: true },
+    ];
 
-    if (selectedQuestions.length < QuizService.QUESTIONS_PER_ATTEMPT) {
-      this.appendQuestions(
-        selectedQuestions,
-        selectedSignatures,
-        selectedOptionSignatures,
-        sameThemeSameLevel,
-        seenSignatures,
-      );
-    }
+    for (const phase of phases) {
+      if (selectedQuestions.length >= QuizService.QUESTIONS_PER_ATTEMPT) {
+        break;
+      }
 
-    if (selectedQuestions.length < QuizService.QUESTIONS_PER_ATTEMPT) {
-      this.appendQuestions(
-        selectedQuestions,
-        selectedSignatures,
-        selectedOptionSignatures,
-        sameThemeAnyLevel,
-        seenSignatures,
-      );
-    }
+      for (const pool of candidatePools) {
+        if (selectedQuestions.length >= QuizService.QUESTIONS_PER_ATTEMPT) {
+          break;
+        }
 
-    if (selectedQuestions.length < QuizService.QUESTIONS_PER_ATTEMPT) {
-      this.appendQuestions(
-        selectedQuestions,
-        selectedSignatures,
-        selectedOptionSignatures,
-        allCandidates,
-        seenSignatures,
-      );
+        this.appendQuestions(
+          selectedQuestions,
+          selectedSignatures,
+          selectedOptionSignatures,
+          pool,
+          seenSignatures,
+          phase,
+        );
+      }
     }
 
     return selectedQuestions.slice(0, QuizService.QUESTIONS_PER_ATTEMPT);
@@ -1504,162 +1516,414 @@ export class QuizService implements OnModuleInit {
     const themeBlueprints: Array<{
       theme: QuizTheme;
       title: string;
+      titleEn: string;
       description: string;
+      descriptionEn: string;
       questionText: string;
+      questionTextEn: string;
+      questionImageUrl: string;
+      questionImageAlt: string;
+      questionImageAltEn: string;
       correctLabel: string;
+      correctLabelEn: string;
       wrongA: string;
+      wrongAEn: string;
       wrongB: string;
+      wrongBEn: string;
       mainTopic: typeof ckd;
       supportsDialysisContext: boolean;
     }> = [
       {
         theme: QuizTheme.FOLLOW_UP,
         title: 'Suivi renal quotidien',
+        titleEn: 'Daily kidney follow-up',
         description: 'Points cles de suivi regulier pour proteger la fonction renale.',
+        descriptionEn: 'Key regular follow-up actions to protect kidney function.',
         questionText: 'Quel reflexe de suivi est prioritaire en insuffisance renale chronique ?',
+        questionTextEn: 'Which follow-up habit is a priority in chronic kidney disease?',
+        questionImageUrl: '/quiz-images/question-follow-up.svg',
+        questionImageAlt: 'Illustration d un suivi medical planifie.',
+        questionImageAltEn: 'Illustration of scheduled medical follow-up.',
         correctLabel: 'Controles reguliers et suivi medical planifie',
+        correctLabelEn: 'Regular check-ups and planned medical follow-up',
         wrongA: 'Arreter le suivi en absence de symptomes',
+        wrongAEn: 'Stop follow-up when there are no symptoms',
         wrongB: 'Attendre uniquement les urgences',
+        wrongBEn: 'Wait only for emergencies',
         mainTopic: ckd,
         supportsDialysisContext: true,
       },
       {
         theme: QuizTheme.RISK_FACTORS,
         title: 'Facteurs de risque renaux',
+        titleEn: 'Kidney risk factors',
         description: 'Identifier les facteurs qui accelerent la progression renale.',
+        descriptionEn: 'Identify factors that accelerate kidney disease progression.',
         questionText: 'Quel facteur augmente clairement le risque de degradation renale ?',
+        questionTextEn: 'Which factor clearly increases the risk of kidney deterioration?',
+        questionImageUrl: '/quiz-images/question-risk-factors.svg',
+        questionImageAlt: 'Illustration des facteurs de risque a surveiller.',
+        questionImageAltEn: 'Illustration of risk factors to monitor.',
         correctLabel: 'HTA non controlee et diabete mal equilibre',
+        correctLabelEn: 'Uncontrolled hypertension and poorly controlled diabetes',
         wrongA: 'Activite physique adaptee',
+        wrongAEn: 'Adapted physical activity',
         wrongB: 'Hydratation selon recommandations',
+        wrongBEn: 'Hydration according to recommendations',
         mainTopic: diabetes,
         supportsDialysisContext: false,
       },
       {
         theme: QuizTheme.PREVENTION,
         title: 'Prevention renale',
+        titleEn: 'Kidney prevention',
         description: 'Mesures de prevention pour limiter les complications cardio-renales.',
+        descriptionEn: 'Prevention measures to reduce cardio-kidney complications.',
         questionText: 'Quelle mesure est la plus utile en prevention renale ?',
+        questionTextEn: 'Which measure is most useful for kidney prevention?',
+        questionImageUrl: '/quiz-images/question-prevention.svg',
+        questionImageAlt: 'Illustration de gestes de prevention renale.',
+        questionImageAltEn: 'Illustration of kidney prevention actions.',
         correctLabel: 'Surveillance tensionnelle et hygiene de vie',
+        correctLabelEn: 'Blood pressure monitoring and healthy lifestyle',
         wrongA: 'Automedication prolongee',
+        wrongAEn: 'Prolonged self-medication',
         wrongB: 'Absence de suivi annuel',
+        wrongBEn: 'No annual follow-up',
         mainTopic: htn,
         supportsDialysisContext: false,
       },
       {
         theme: QuizTheme.ADHERENCE,
         title: 'Adherence therapeutique',
+        titleEn: 'Therapeutic adherence',
         description: 'Renforcer l adherence aux traitements de nephrologie.',
+        descriptionEn: 'Strengthen adherence to nephrology treatments.',
         questionText: 'En cas d oubli de traitement repete, quelle conduite est adaptee ?',
+        questionTextEn: 'In case of repeated missed medication, what is the appropriate action?',
+        questionImageUrl: '/quiz-images/question-adherence.svg',
+        questionImageAlt: 'Illustration d adherence au traitement.',
+        questionImageAltEn: 'Illustration of treatment adherence.',
         correctLabel: 'Prevenir l equipe soignante rapidement',
+        correctLabelEn: 'Inform the care team quickly',
         wrongA: 'Doubler les doses sans avis',
+        wrongAEn: 'Double doses without medical advice',
         wrongB: 'Interrompre le traitement',
+        wrongBEn: 'Stop treatment',
         mainTopic: ckd,
         supportsDialysisContext: true,
       },
       {
         theme: QuizTheme.TREATMENT,
         title: 'Traitements nephrologiques',
+        titleEn: 'Nephrology treatments',
         description: 'Comprendre les fondamentaux des traitements renaux.',
+        descriptionEn: 'Understand the fundamentals of kidney treatments.',
         questionText: 'Quel comportement ameliore la securite du traitement ?',
+        questionTextEn: 'Which behavior improves treatment safety?',
+        questionImageUrl: '/quiz-images/question-treatment.svg',
+        questionImageAlt: 'Illustration de traitement medical securise.',
+        questionImageAltEn: 'Illustration of safe medical treatment.',
         correctLabel: 'Respecter prescription et bilans de controle',
+        correctLabelEn: 'Follow prescriptions and monitoring tests',
         wrongA: 'Modifier le traitement seul',
+        wrongAEn: 'Change treatment on your own',
         wrongB: 'Sauter les controles biologiques',
+        wrongBEn: 'Skip laboratory monitoring',
         mainTopic: dialysis,
         supportsDialysisContext: true,
       },
       {
         theme: QuizTheme.NUTRITION,
         title: 'Nutrition en IRC',
+        titleEn: 'Nutrition in CKD',
         description: 'Nutrition adaptee pour limiter surcharge et complications.',
+        descriptionEn: 'Adapted nutrition to reduce overload and complications.',
         questionText: 'Quel conseil nutritionnel est pertinent en IRC ?',
+        questionTextEn: 'Which nutrition advice is relevant in CKD?',
+        questionImageUrl: '/quiz-images/question-nutrition.svg',
+        questionImageAlt: 'Illustration de nutrition adaptee en insuffisance renale.',
+        questionImageAltEn: 'Illustration of adapted nutrition in kidney disease.',
         correctLabel: 'Limiter le sel selon avis medical',
+        correctLabelEn: 'Limit salt according to medical advice',
         wrongA: 'Consommer du sel librement',
+        wrongAEn: 'Consume salt freely',
         wrongB: 'Supprimer tous les repas',
+        wrongBEn: 'Skip all meals',
         mainTopic: nutrition,
         supportsDialysisContext: true,
       },
       {
         theme: QuizTheme.LIFESTYLE,
         title: 'Mode de vie en nephrologie',
+        titleEn: 'Lifestyle in nephrology',
         description: 'Habitudes de vie compatibles avec un suivi renal durable.',
+        descriptionEn: 'Lifestyle habits compatible with long-term kidney follow-up.',
         questionText: 'Quelle habitude de vie aide le plus le parcours renal ?',
+        questionTextEn: 'Which lifestyle habit helps the kidney care journey the most?',
+        questionImageUrl: '/quiz-images/question-lifestyle.svg',
+        questionImageAlt: 'Illustration d habitudes de vie benefiques.',
+        questionImageAltEn: 'Illustration of beneficial lifestyle habits.',
         correctLabel: 'Routine de suivi, activite et repos adaptes',
+        correctLabelEn: 'Follow-up routine, adapted activity and rest',
         wrongA: 'Ignorer fatigue et symptomes',
+        wrongAEn: 'Ignore fatigue and symptoms',
         wrongB: 'Eviter toute activite utile',
+        wrongBEn: 'Avoid any useful activity',
         mainTopic: dialysis,
         supportsDialysisContext: true,
       },
       {
         theme: QuizTheme.COMPLICATIONS,
         title: 'Complications cardio-renales',
+        titleEn: 'Cardio-kidney complications',
         description: 'Reconnaitre tot les signes d alerte lies aux complications.',
+        descriptionEn: 'Recognize early warning signs linked to complications.',
         questionText: 'Quel signe impose un signalement rapide a l equipe soignante ?',
+        questionTextEn: 'Which sign requires rapid reporting to the care team?',
+        questionImageUrl: '/quiz-images/question-complications.svg',
+        questionImageAlt: 'Illustration de signes d alerte a signaler.',
+        questionImageAltEn: 'Illustration of warning signs to report.',
         correctLabel: 'Malaise, dyspnee ou crampes marquees',
+        correctLabelEn: 'Malaise, shortness of breath, or marked cramps',
         wrongA: 'Faim passagere',
+        wrongAEn: 'Temporary hunger',
         wrongB: 'Soif legere isolee',
+        wrongBEn: 'Mild isolated thirst',
         mainTopic: dialysis,
         supportsDialysisContext: true,
       },
     ];
 
-    const buildThemeQuestions = (blueprint: (typeof themeBlueprints)[number], series: number) => {
+    const buildThemeQuestions = (
+      blueprint: (typeof themeBlueprints)[number],
+      series: number,
+      blueprintIndex: number,
+    ) => {
+      const sensitiveThemes = new Set<QuizTheme>([
+        QuizTheme.ADHERENCE,
+        QuizTheme.TREATMENT,
+        QuizTheme.COMPLICATIONS,
+      ]);
       const scenarioLabels = [
-        'au domicile',
-        'en consultation',
-        'au moment du traitement',
-        'lors du suivi mensuel',
-        'en prevention quotidienne',
-        'en phase de stabilisation',
-        'en coordination avec l equipe soignante',
-        'lors du controle biologique',
-        'en contexte de comorbidite',
-        'dans le parcours educatif',
+        { fr: 'au domicile', en: 'at home' },
+        { fr: 'en consultation', en: 'during a consultation' },
+        { fr: 'au moment du traitement', en: 'during treatment' },
+        { fr: 'lors du suivi mensuel', en: 'during monthly follow-up' },
+        { fr: 'en prevention quotidienne', en: 'in daily prevention' },
+        { fr: 'en phase de stabilisation', en: 'during stabilization' },
+        { fr: 'en coordination avec l equipe soignante', en: 'in coordination with the care team' },
+        { fr: 'lors du controle biologique', en: 'during lab monitoring' },
+        { fr: 'en contexte de comorbidite', en: 'in a comorbidity context' },
+        { fr: 'dans le parcours educatif', en: 'within the education pathway' },
       ];
       const scenario = scenarioLabels[(series - 1) % scenarioLabels.length];
+      const focusLabels = [
+        {
+          fr: 'apres apparition d un oedeme des membres inferieurs',
+          en: 'after lower-limb edema appears',
+        },
+        {
+          fr: 'face a une prise de poids rapide',
+          en: 'when facing rapid weight gain',
+        },
+        {
+          fr: 'quand les resultats biologiques evoluent',
+          en: 'when lab results are changing',
+        },
+        {
+          fr: 'avant le renouvellement du traitement',
+          en: 'before treatment renewal',
+        },
+        {
+          fr: 'durant une semaine de fatigue persistante',
+          en: 'during a week of persistent fatigue',
+        },
+        {
+          fr: 'apres un oubli de medicament',
+          en: 'after a missed medication dose',
+        },
+        {
+          fr: 'en presence de crampes nocturnes',
+          en: 'in the presence of nighttime cramps',
+        },
+        {
+          fr: 'apres un ecart alimentaire notable',
+          en: 'after a notable dietary deviation',
+        },
+        {
+          fr: 'devant une tension arterielle elevee',
+          en: 'with elevated blood pressure',
+        },
+        {
+          fr: 'lors d un essoufflement inhabituel',
+          en: 'during unusual shortness of breath',
+        },
+      ];
+      const focus = focusLabels[(series - 1) % focusLabels.length];
+      const moduleChoiceText = `Dans le module ${blueprint.title.toLowerCase()}, quel choix est le plus adapte ${scenario.fr} ?`;
+      const moduleChoiceTextEn = `In the ${blueprint.titleEn.toLowerCase()} module, which choice is most appropriate ${scenario.en}?`;
+      const imageInstruction = 'Choisissez l image qui montre la conduite la plus adaptee.';
+      const imageInstructionEn = 'Choose the image that shows the most appropriate action.';
+      const isSensitive = sensitiveThemes.has(blueprint.theme);
+      const wrongALower = blueprint.wrongA.toLowerCase();
+      const wrongALowerEn = blueprint.wrongAEn.toLowerCase();
+      const baseQuestionFr = blueprint.questionText.replace(/\?+\s*$/, '').trim();
+      const baseQuestionEn = blueprint.questionTextEn.replace(/\?+\s*$/, '').trim();
+      const contextualQuestionFr = `${baseQuestionFr} ${focus.fr} ?`;
+      const contextualQuestionEn = `${baseQuestionEn} ${focus.en}?`;
+      const visualVariant = ((blueprintIndex + series - 1) % 4) + 1;
+      const contextualQuestionImageByFocus: Record<
+        string,
+        { url: string; alt: string; altEn: string }
+      > = {
+        'quand les resultats biologiques evoluent': {
+          url: '/quiz-images/question-lab-monitoring.svg',
+          alt: 'Illustration de suivi des resultats biologiques.',
+          altEn: 'Illustration of laboratory result monitoring.',
+        },
+      };
+      const contextualQuestionImage =
+        contextualQuestionImageByFocus[focus.fr] ??
+        ({
+          url: blueprint.questionImageUrl,
+          alt: blueprint.questionImageAlt,
+          altEn: blueprint.questionImageAltEn,
+        } as const);
+      const isAlertSymptomContext = [
+        'en presence de crampes nocturnes',
+        'lors d un essoufflement inhabituel',
+        'apres apparition d un oedeme des membres inferieurs',
+      ].includes(focus.fr);
+      const isFatigueContext = focus.fr === 'durant une semaine de fatigue persistante';
+      const safeOptionImageUrl = isFatigueContext
+        ? '/quiz-images/option-fatigue-good.svg'
+        : isAlertSymptomContext
+          ? '/quiz-images/option-alert-good.svg'
+          : `/quiz-images/option-safe-action-v${visualVariant}.svg`;
+      const riskOptionImageUrl = isFatigueContext
+        ? '/quiz-images/option-fatigue-risky.svg'
+        : isAlertSymptomContext
+          ? '/quiz-images/option-alert-risky.svg'
+          : `/quiz-images/option-risk-action-v${visualVariant}.svg`;
+      const noFollowupImageUrl = isFatigueContext
+        ? '/quiz-images/option-fatigue-intermediate.svg'
+        : isAlertSymptomContext
+          ? '/quiz-images/option-alert-intermediate.svg'
+          : `/quiz-images/option-no-followup-v${visualVariant}.svg`;
 
       return [
         {
           linkId: 'q1',
-          text: `${blueprint.questionText} (Quiz ${series})`,
+          text: `${contextualQuestionFr} (Quiz ${series})`,
+          textI18n: { en: `${contextualQuestionEn} (Quiz ${series})` },
+          promptText: isSensitive ? contextualQuestionFr : null,
+          promptTextI18n: isSensitive ? { en: contextualQuestionEn } : {},
+          audioText: `${contextualQuestionFr} ${imageInstruction}`,
+          audioTextI18n: { en: `${contextualQuestionEn} ${imageInstructionEn}` },
+          imageUrl: contextualQuestionImage.url,
+          imageAlt: contextualQuestionImage.alt,
+          imageAltI18n: { en: contextualQuestionImage.altEn },
+          isSensitiveMedical: isSensitive,
           type: QuizQuestionType.SINGLE_CHOICE,
           weight: 1,
           options: [
-            { code: 'A', label: blueprint.correctLabel, isCorrect: true },
-            { code: 'B', label: blueprint.wrongA, isCorrect: false },
-            { code: 'C', label: blueprint.wrongB, isCorrect: false },
+            {
+              code: 'A',
+              label: blueprint.correctLabel,
+              labelI18n: { en: blueprint.correctLabelEn },
+              isCorrect: true,
+              imageUrl: safeOptionImageUrl,
+              imageAlt: `Illustration: ${blueprint.correctLabel}`,
+              imageAltI18n: { en: `Illustration: ${blueprint.correctLabelEn}` },
+            },
+            {
+              code: 'B',
+              label: blueprint.wrongA,
+              labelI18n: { en: blueprint.wrongAEn },
+              isCorrect: false,
+              imageUrl: riskOptionImageUrl,
+              imageAlt: `Illustration: ${blueprint.wrongA}`,
+              imageAltI18n: { en: `Illustration: ${blueprint.wrongAEn}` },
+            },
+            {
+              code: 'C',
+              label: blueprint.wrongB,
+              labelI18n: { en: blueprint.wrongBEn },
+              isCorrect: false,
+              imageUrl: noFollowupImageUrl,
+              imageAlt: `Illustration: ${blueprint.wrongB}`,
+              imageAltI18n: { en: `Illustration: ${blueprint.wrongBEn}` },
+            },
           ],
         },
         {
           linkId: 'q2',
-          text: `Dans le module ${blueprint.title.toLowerCase()}, quel choix est le plus adapte ${scenario} ? (Quiz ${series})`,
+          text: `${moduleChoiceText} (Quiz ${series})`,
+          textI18n: { en: `${moduleChoiceTextEn} (Quiz ${series})` },
+          promptText: moduleChoiceText,
+          promptTextI18n: { en: moduleChoiceTextEn },
+          audioText: moduleChoiceText,
+          audioTextI18n: { en: moduleChoiceTextEn },
+          imageUrl: null,
+          imageAlt: null,
+          isSensitiveMedical: isSensitive,
           type: QuizQuestionType.SINGLE_CHOICE,
           weight: 1,
           options: [
-            { code: 'A', label: blueprint.correctLabel, isCorrect: true },
-            { code: 'B', label: blueprint.wrongA, isCorrect: false },
-            { code: 'C', label: 'Attendre sans suivi structure', isCorrect: false },
+            {
+              code: 'A',
+              label: blueprint.correctLabel,
+              labelI18n: { en: blueprint.correctLabelEn },
+              isCorrect: true,
+            },
+            {
+              code: 'B',
+              label: blueprint.wrongA,
+              labelI18n: { en: blueprint.wrongAEn },
+              isCorrect: false,
+            },
+            {
+              code: 'C',
+              label: 'Attendre sans suivi structure',
+              labelI18n: { en: 'Wait without structured follow-up' },
+              isCorrect: false,
+            },
           ],
         },
         {
           linkId: 'q3',
-          text: `Vrai ou faux: ${blueprint.wrongA.toLowerCase()} est une bonne pratique. (Quiz ${series})`,
+          text: `Vrai ou faux: ${wrongALower} est une bonne pratique. (Quiz ${series})`,
+          textI18n: {
+            en: `True or false: ${wrongALowerEn} is good practice. (Quiz ${series})`,
+          },
+          promptText: `Vrai ou faux: ${wrongALower} est une bonne pratique.`,
+          promptTextI18n: { en: `True or false: ${wrongALowerEn} is good practice.` },
+          audioText: null,
+          audioTextI18n: {},
+          imageUrl: null,
+          imageAlt: null,
+          imageAltI18n: {},
+          isSensitiveMedical: isSensitive,
           type: QuizQuestionType.BOOLEAN,
           weight: 1,
           options: [
-            { code: 'TRUE', label: 'Vrai', isCorrect: false },
-            { code: 'FALSE', label: 'Faux', isCorrect: true },
+            { code: 'TRUE', label: 'Vrai', labelI18n: { en: 'True' }, isCorrect: false },
+            { code: 'FALSE', label: 'Faux', labelI18n: { en: 'False' }, isCorrect: true },
           ],
         },
       ];
     };
 
-    const generatedThemeTemplates = themeBlueprints.flatMap((blueprint) =>
+    const generatedThemeTemplates = themeBlueprints.flatMap((blueprint, blueprintIndex) =>
       Array.from({ length: 10 }, (_, index) => {
         const series = index + 1;
         return {
           title: `${blueprint.title} - Serie ${series}`,
+          titleI18n: { en: `${blueprint.titleEn} - Series ${series}` },
           slug: `theme-${blueprint.theme.toLowerCase()}-serie-${series}`,
           description: `${blueprint.description} (serie ${series}).`,
+          descriptionI18n: { en: `${blueprint.descriptionEn} (series ${series}).` },
           status: QuizStatus.PUBLISHED,
           level:
             series <= 4
@@ -1672,7 +1936,7 @@ export class QuizService implements OnModuleInit {
           supportsDialysisContext: blueprint.supportsDialysisContext,
           mainTopic: blueprint.mainTopic,
           relatedTopics: allRelatedTopics,
-          questions: buildThemeQuestions(blueprint, series),
+          questions: buildThemeQuestions(blueprint, series, blueprintIndex),
         };
       }),
     );
@@ -1700,16 +1964,76 @@ export class QuizService implements OnModuleInit {
       relations: { questions: true },
     });
 
+    const generatedQuizzesToUpdate: QuizEntity[] = [];
     const generatedQuestionsToCreate: QuizQuestionEntity[] = [];
+    const generatedQuestionsToUpdate: QuizQuestionEntity[] = [];
     generatedSeriesQuizzes.forEach((generatedQuiz) => {
       const template = generatedTemplateBySlug.get(generatedQuiz.slug);
       if (!template) {
         return;
       }
 
-      const existingLinkIds = new Set(generatedQuiz.questions.map((question) => question.linkId));
+      const hasQuizChanges =
+        generatedQuiz.title !== template.title ||
+        generatedQuiz.description !== (template.description ?? null) ||
+        JSON.stringify(generatedQuiz.titleI18n ?? {}) !==
+          JSON.stringify(template.titleI18n ?? {}) ||
+        JSON.stringify(generatedQuiz.descriptionI18n ?? {}) !==
+          JSON.stringify(template.descriptionI18n ?? {});
+
+      if (hasQuizChanges) {
+        generatedQuiz.title = template.title;
+        generatedQuiz.description = template.description ?? null;
+        generatedQuiz.titleI18n = template.titleI18n ?? {};
+        generatedQuiz.descriptionI18n = template.descriptionI18n ?? {};
+        generatedQuizzesToUpdate.push(generatedQuiz);
+      }
+
+      const existingByLinkId = new Map(
+        generatedQuiz.questions.map((question) => [question.linkId, question] as const),
+      );
       template.questions.forEach((questionTemplate) => {
-        if (existingLinkIds.has(questionTemplate.linkId)) {
+        const existingQuestion = existingByLinkId.get(questionTemplate.linkId);
+        if (existingQuestion) {
+          const hasChanges =
+            existingQuestion.text !== questionTemplate.text ||
+            existingQuestion.promptText !== (questionTemplate.promptText ?? null) ||
+            existingQuestion.audioText !== (questionTemplate.audioText ?? null) ||
+            existingQuestion.imageUrl !== (questionTemplate.imageUrl ?? null) ||
+            existingQuestion.imageAlt !== (questionTemplate.imageAlt ?? null) ||
+            JSON.stringify(existingQuestion.textI18n ?? {}) !==
+              JSON.stringify(questionTemplate.textI18n ?? {}) ||
+            JSON.stringify(existingQuestion.promptTextI18n ?? {}) !==
+              JSON.stringify(questionTemplate.promptTextI18n ?? {}) ||
+            JSON.stringify(existingQuestion.audioTextI18n ?? {}) !==
+              JSON.stringify(questionTemplate.audioTextI18n ?? {}) ||
+            JSON.stringify(existingQuestion.imageAltI18n ?? {}) !==
+              JSON.stringify(questionTemplate.imageAltI18n ?? {}) ||
+            existingQuestion.type !== questionTemplate.type ||
+            Number(existingQuestion.weight) !== Number(questionTemplate.weight) ||
+            Boolean(existingQuestion.isSensitiveMedical) !==
+              Boolean(questionTemplate.isSensitiveMedical) ||
+            JSON.stringify(existingQuestion.options ?? []) !==
+              JSON.stringify(questionTemplate.options ?? []);
+
+          if (!hasChanges) {
+            return;
+          }
+
+          existingQuestion.text = questionTemplate.text;
+          existingQuestion.promptText = questionTemplate.promptText ?? null;
+          existingQuestion.audioText = questionTemplate.audioText ?? null;
+          existingQuestion.imageUrl = questionTemplate.imageUrl ?? null;
+          existingQuestion.imageAlt = questionTemplate.imageAlt ?? null;
+          existingQuestion.textI18n = questionTemplate.textI18n ?? {};
+          existingQuestion.promptTextI18n = questionTemplate.promptTextI18n ?? {};
+          existingQuestion.audioTextI18n = questionTemplate.audioTextI18n ?? {};
+          existingQuestion.imageAltI18n = questionTemplate.imageAltI18n ?? {};
+          existingQuestion.type = questionTemplate.type;
+          existingQuestion.weight = questionTemplate.weight;
+          existingQuestion.options = questionTemplate.options;
+          existingQuestion.isSensitiveMedical = Boolean(questionTemplate.isSensitiveMedical);
+          generatedQuestionsToUpdate.push(existingQuestion);
           return;
         }
 
@@ -1722,10 +2046,24 @@ export class QuizService implements OnModuleInit {
       });
     });
 
+    if (generatedQuizzesToUpdate.length > 0) {
+      await this.quizRepository.save(generatedQuizzesToUpdate);
+      this.logger.log(
+        `Theme-series quiz metadata updated with ${generatedQuizzesToUpdate.length} localization entries`,
+      );
+    }
+
     if (generatedQuestionsToCreate.length > 0) {
       await this.questionRepository.save(generatedQuestionsToCreate);
       this.logger.log(
         `Theme-series question banks upgraded with ${generatedQuestionsToCreate.length} additional questions`,
+      );
+    }
+
+    if (generatedQuestionsToUpdate.length > 0) {
+      await this.questionRepository.save(generatedQuestionsToUpdate);
+      this.logger.log(
+        `Theme-series question banks updated with ${generatedQuestionsToUpdate.length} enriched questions`,
       );
     }
 

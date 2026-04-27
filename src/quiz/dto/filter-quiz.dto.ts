@@ -4,6 +4,7 @@ import { ApiPropertyOptional } from '@nestjs/swagger';
 import { MedicalTopicKey } from '../../common/enums/medical-topic.enum';
 import { PatientProfile } from '../../common/enums/patient.enum';
 import { QuizLevel, QuizTheme } from '../../common/enums/quiz.enum';
+import { PatientLanguage } from '../../common/enums/language.enum';
 
 const toArray = ({ value }: { value: unknown }): string[] | undefined => {
   if (!value) {
@@ -91,4 +92,13 @@ export class FilterQuizDto {
   @Transform(toBoolean)
   @IsBoolean()
   autoLevel?: boolean;
+
+  @ApiPropertyOptional({
+    enum: PatientLanguage,
+    example: PatientLanguage.FR,
+    description: 'Langue de restitution des contenus quiz (fallback FR si traduction absente).',
+  })
+  @IsOptional()
+  @IsEnum(PatientLanguage)
+  lang?: PatientLanguage;
 }

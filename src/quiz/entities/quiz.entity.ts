@@ -15,9 +15,12 @@ import {
   QuizTheme,
 } from '../../common/enums/quiz.enum';
 import { PatientProfile } from '../../common/enums/patient.enum';
+import { PatientLanguage } from '../../common/enums/language.enum';
 import { MedicalTopicEntity } from '../../icd/entities/medical-topic.entity';
 import { QuizQuestionEntity } from './quiz-question.entity';
 import { QuizAttemptEntity } from './quiz-attempt.entity';
+
+type LocalizedTextMap = Partial<Record<PatientLanguage, string>>;
 
 @Entity('quizzes')
 @Unique(['slug'])
@@ -28,11 +31,17 @@ export class QuizEntity {
   @Column({ length: 120 })
   title: string;
 
+  @Column({ type: 'jsonb', default: () => "'{}'" })
+  titleI18n: LocalizedTextMap;
+
   @Column({ length: 140 })
   slug: string;
 
   @Column({ type: 'text', nullable: true })
   description: string | null;
+
+  @Column({ type: 'jsonb', default: () => "'{}'" })
+  descriptionI18n: LocalizedTextMap;
 
   @Column({ type: 'enum', enum: QuizStatus, default: QuizStatus.DRAFT })
   status: QuizStatus;
