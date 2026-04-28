@@ -11,6 +11,7 @@ import { IcdModule } from './icd/icd.module';
 import { PatientModule } from './patient/patient.module';
 import { QuizModule } from './quiz/quiz.module';
 import { AuthModule } from './auth/auth.module';
+import { NotificationModule } from './notification/notification.module';
 import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
 
 @Module({
@@ -23,6 +24,7 @@ import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
     AnalysisModule,
     FhirModule,
     AuthModule,
+    NotificationModule,
   ],
   controllers: [AppController],
   providers: [

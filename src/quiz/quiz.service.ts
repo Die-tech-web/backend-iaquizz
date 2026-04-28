@@ -37,6 +37,7 @@ import {
   PatientLanguage,
   resolvePatientLanguage,
 } from '../common/enums/language.enum';
+import { NotificationService } from '../notification/notification.service';
 import { QuizLocalizationService } from './quiz-localization.service';
 
 export type QuizSubmissionResult = {
@@ -98,6 +99,7 @@ export class QuizService implements OnModuleInit {
     private readonly patientService: PatientService,
     private readonly quizLevelAdaptationService: QuizLevelAdaptationService,
     private readonly quizLocalizationService: QuizLocalizationService,
+    private readonly notificationService: NotificationService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -405,6 +407,11 @@ export class QuizService implements OnModuleInit {
       progressionUpdate.maxScore > 0
         ? Number(((progressionUpdate.score / progressionUpdate.maxScore) * 10).toFixed(2))
         : 0;
+    await this.notificationService.createCriticalQuizNotifications({
+      patient,
+      attempt: savedAttempt,
+      scoreOnTen,
+    });
 
     return {
       id: savedAttempt.id,

@@ -5,6 +5,7 @@ import { PatientEntity } from './entities/patient.entity';
 import { CreatePatientDto } from './dto/create-patient.dto';
 import { IcdService } from '../icd/icd.service';
 import { PatientLanguage, resolvePatientLanguage } from '../common/enums/language.enum';
+import { ProfessionalService } from '../professional/professional.service';
 
 @Injectable()
 export class PatientService {
@@ -12,6 +13,7 @@ export class PatientService {
     @InjectRepository(PatientEntity)
     private readonly patientRepository: Repository<PatientEntity>,
     private readonly icdService: IcdService,
+    private readonly professionalService: ProfessionalService,
   ) {}
 
   async create(dto: CreatePatientDto): Promise<PatientEntity> {
@@ -30,6 +32,31 @@ export class PatientService {
 
   async findAll(): Promise<PatientEntity[]> {
     return this.patientRepository.find({ order: { lastName: 'ASC', firstName: 'ASC' } });
+  }
+
+  async findAllForProfessionalDashboard(professionalId: string): Promise<PatientEntity[]> {
+    const allEligiblePatients = await this.patientRepository
+      .createQueryBuilder('patient')
+      .where('patient.email IS NOT NULL')
+      .andWhere('patient.passwordHash IS NOT NULL')
+      .andWhere("LOWER(patient.firstName) <> 'e2e'")
+      .orderBy('patient.lastName', 'ASC')
+      .addOrderBy('patient.firstName', 'ASC')
+      .getMany();
+
+    if (!allEligiblePatients.length) {
+      return [];
+    }
+
+    await this.professionalService.bootstrapAssignmentsForProfessional(
+      professionalId,
+      allEligiblePatients.map((patient) => patient.id),
+    );
+    const assignedIds = new Set(
+      await this.professionalService.getPatientIdsForProfessional(professionalId),
+    );
+
+    return allEligiblePatients.filter((patient) => assignedIds.has(patient.id));
   }
 
   async findById(id: string): Promise<PatientEntity> {

@@ -1,7 +1,9 @@
 import { PatientProfile } from '../../common/enums/patient.enum';
+import { AuthRole } from '../../common/enums/auth-role.enum';
 
 export interface JwtPayload {
   sub: string;
   email: string;
-  profile: PatientProfile;
+  role: AuthRole;
+  profile?: PatientProfile;
 }

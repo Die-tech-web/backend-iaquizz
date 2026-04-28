@@ -9,6 +9,9 @@ import { QuizAttemptEntity } from '../quiz/entities/quiz-attempt.entity';
 import { QuizAnswerEntity } from '../quiz/entities/quiz-answer.entity';
 import { PatientProgressionEntity } from '../quiz/entities/patient-progression.entity';
 import { PatientEntity } from '../patient/entities/patient.entity';
+import { NotificationEntity } from '../notification/entities/notification.entity';
+import { CareTeamAssignmentEntity } from '../professional/entities/care-team-assignment.entity';
+import { HealthProfessionalEntity } from '../professional/entities/health-professional.entity';
 
 function envToBoolean(value: string | undefined, defaultValue: boolean): boolean {
   if (value === undefined) {
@@ -41,6 +44,9 @@ export const typeOrmConfig: TypeOrmModuleAsyncOptions = {
         QuizAnswerEntity,
         PatientProgressionEntity,
         PatientEntity,
+        HealthProfessionalEntity,
+        CareTeamAssignmentEntity,
+        NotificationEntity,
       ],
       synchronize,
       autoLoadEntities: false,

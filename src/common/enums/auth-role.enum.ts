@@ -1,0 +1,4 @@
+export enum AuthRole {
+  PATIENT = 'PATIENT',
+  HEALTH_PROFESSIONAL = 'HEALTH_PROFESSIONAL',
+}

@@ -8,6 +8,7 @@ import { AuthService } from './auth.service';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { PatientEntity } from '../patient/entities/patient.entity';
 import { IcdModule } from '../icd/icd.module';
+import { ProfessionalModule } from '../professional/professional.module';
 
 @Module({
   imports: [
@@ -15,6 +16,7 @@ import { IcdModule } from '../icd/icd.module';
     PassportModule,
     TypeOrmModule.forFeature([PatientEntity]),
     IcdModule,
+    ProfessionalModule,
     JwtModule.registerAsync({
       inject: [ConfigService],
       useFactory: (configService: ConfigService) => {

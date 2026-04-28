@@ -1,4 +1,14 @@
-import { Body, Controller, Get, Param, ParseUUIDPipe, Patch, Post } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  ForbiddenException,
+  Get,
+  Param,
+  ParseUUIDPipe,
+  Patch,
+  Post,
+  Req,
+} from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiBody,
@@ -7,6 +17,9 @@ import {
   ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
+import { Request } from 'express';
+import { JwtPayload } from '../auth/interfaces/jwt-payload.interface';
+import { AuthRole } from '../common/enums/auth-role.enum';
 import { PatientService } from './patient.service';
 import { CreatePatientDto } from './dto/create-patient.dto';
 import { UpdatePreferredLanguageDto } from './dto/update-preferred-language.dto';
@@ -30,6 +43,23 @@ export class PatientController {
   @ApiResponse({ status: 200, description: 'Liste des patients' })
   findAll() {
     return this.patientService.findAll();
+  }
+
+  @Get('professional-dashboard')
+  @ApiOperation({
+    summary:
+      'Lister les patients exploitables dans le dashboard professionnel (comptes patients actifs)',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Liste des patients avec compte patient (email + mot de passe)',
+  })
+  findAllForProfessionalDashboard(@Req() request: Request & { user: JwtPayload }) {
+    if (request.user.role !== AuthRole.HEALTH_PROFESSIONAL) {
+      throw new ForbiddenException('Professional dashboard is reserved to healthcare professionals');
+    }
+
+    return this.patientService.findAllForProfessionalDashboard(request.user.sub);
   }
 
   @Get(':id')
