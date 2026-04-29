@@ -59,4 +59,15 @@ export class NotificationController {
 
     return this.notificationService.markAsRead(notificationId, request.user.sub);
   }
+
+  @Patch('me/read-all')
+  @ApiOperation({ summary: 'Marquer toutes mes notifications comme lues' })
+  @ApiResponse({ status: 200, description: 'Notifications marquées comme lues' })
+  markAllAsRead(@Req() request: RequestWithUser) {
+    if (request.user.role !== AuthRole.HEALTH_PROFESSIONAL) {
+      throw new ForbiddenException('Notifications reserved to healthcare professionals');
+    }
+
+    return this.notificationService.markAllAsRead(request.user.sub);
+  }
 }

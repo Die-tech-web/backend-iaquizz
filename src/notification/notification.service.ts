@@ -95,26 +95,39 @@ export class NotificationService {
 
     return {
       unreadCount,
-      items: items.map((notification) => ({
-        id: notification.id,
-        type: notification.type,
-        status: notification.status,
-        title: notification.title,
-        message: notification.message,
-        scoreOnTen: Number(notification.scoreOnTen),
-        actionLink: notification.actionLink,
-        createdAt: notification.createdAt,
-        readAt: notification.readAt,
-        patient: {
-          id: notification.patient.id,
-          firstName: notification.patient.firstName,
-          lastName: notification.patient.lastName,
-          email: notification.patient.email,
-          currentLevel: notification.patient.currentLevel,
-          preferredLanguage: notification.patient.preferredLanguage,
-        },
-        attemptId: notification.attempt?.id ?? null,
-      })),
+      items: items.map((notification) => {
+        const attemptScore = Number(notification.attempt?.score ?? 0);
+        const attemptMaxScore = Number(notification.attempt?.maxScore ?? 0);
+        const scoreOnTen =
+          attemptMaxScore > 0
+            ? Number(((attemptScore / attemptMaxScore) * 10).toFixed(2))
+            : Number(notification.scoreOnTen ?? 0);
+        const message =
+          notification.type === NotificationType.QUIZ_CRITICAL
+            ? `Le patient ${notification.patient.firstName} ${notification.patient.lastName} a obtenu ${scoreOnTen}/10.`
+            : notification.message;
+
+        return {
+          id: notification.id,
+          type: notification.type,
+          status: notification.status,
+          title: notification.title,
+          message,
+          scoreOnTen,
+          actionLink: notification.actionLink,
+          createdAt: notification.createdAt,
+          readAt: notification.readAt,
+          patient: {
+            id: notification.patient.id,
+            firstName: notification.patient.firstName,
+            lastName: notification.patient.lastName,
+            email: notification.patient.email,
+            currentLevel: notification.patient.currentLevel,
+            preferredLanguage: notification.patient.preferredLanguage,
+          },
+          attemptId: notification.attempt?.id ?? null,
+        };
+      }),
     };
   }
 
@@ -147,6 +160,25 @@ export class NotificationService {
       id: saved.id,
       status: saved.status,
       readAt: saved.readAt,
+    };
+  }
+
+  async markAllAsRead(professionalId: string) {
+    const now = new Date();
+    const result = await this.notificationRepository
+      .createQueryBuilder()
+      .update(NotificationEntity)
+      .set({
+        status: NotificationStatus.READ,
+        readAt: now,
+      })
+      .where('recipient_professional_id = :professionalId', { professionalId })
+      .andWhere('status = :status', { status: NotificationStatus.UNREAD })
+      .execute();
+
+    return {
+      updatedCount: result.affected ?? 0,
+      readAt: now,
     };
   }
 }

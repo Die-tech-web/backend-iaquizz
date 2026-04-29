@@ -437,8 +437,10 @@ export class QuizService implements OnModuleInit {
       maxScore: Number(savedAttempt.maxScore ?? maxScore ?? 0),
     });
     const scoreOnTen =
-      totalQuestionsCount > 0
-        ? Number(((correctAnswersCount / totalQuestionsCount) * 10).toFixed(2))
+      Number(savedAttempt.maxScore ?? 0) > 0
+        ? Number(
+            ((Number(savedAttempt.score ?? 0) / Number(savedAttempt.maxScore ?? 0)) * 10).toFixed(2),
+          )
         : 0;
     await this.notificationService.createCriticalQuizNotifications({
       patient,
@@ -1993,18 +1995,25 @@ export class QuizService implements OnModuleInit {
         'apres apparition d un oedeme des membres inferieurs',
       ].includes(focus.fr);
       const isFatigueContext = focus.fr === 'durant une semaine de fatigue persistante';
+      const isHypertensionContext = focus.fr === 'devant une tension arterielle elevee';
       const safeOptionImageUrl = isFatigueContext
         ? '/quiz-images/option-fatigue-good.svg'
+        : isHypertensionContext
+          ? '/quiz-images/option-hypertension-good.svg'
         : isAlertSymptomContext
           ? '/quiz-images/option-alert-good.svg'
           : `/quiz-images/option-safe-action-v${visualVariant}.svg`;
       const riskOptionImageUrl = isFatigueContext
         ? '/quiz-images/option-fatigue-risky.svg'
+        : isHypertensionContext
+          ? '/quiz-images/option-hypertension-risky.svg'
         : isAlertSymptomContext
           ? '/quiz-images/option-alert-risky.svg'
           : `/quiz-images/option-risk-action-v${visualVariant}.svg`;
       const noFollowupImageUrl = isFatigueContext
         ? '/quiz-images/option-fatigue-intermediate.svg'
+        : isHypertensionContext
+          ? '/quiz-images/option-hypertension-intermediate.svg'
         : isAlertSymptomContext
           ? '/quiz-images/option-alert-intermediate.svg'
           : `/quiz-images/option-no-followup-v${visualVariant}.svg`;
