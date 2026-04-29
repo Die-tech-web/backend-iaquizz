@@ -50,6 +50,12 @@ export class QuizAttemptEntity {
   @Column({ type: 'timestamptz', nullable: true })
   completedAt: Date | null;
 
+  @Column({ type: 'boolean', default: false })
+  isSavedByPatient: boolean;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  savedAt: Date | null;
+
   @OneToMany(() => QuizAnswerEntity, (answer) => answer.attempt, { cascade: true, eager: true })
   answers: QuizAnswerEntity[];
 }

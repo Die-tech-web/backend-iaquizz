@@ -2,12 +2,14 @@ import {
   Body,
   Controller,
   DefaultValuePipe,
+  ForbiddenException,
   Get,
   Param,
   ParseEnumPipe,
   ParseUUIDPipe,
   Post,
   Query,
+  Req,
 } from '@nestjs/common';
 import {
   ApiBearerAuth,
@@ -21,11 +23,16 @@ import {
 import { QuizService } from './quiz.service';
 import { FilterQuizDto } from './dto/filter-quiz.dto';
 import { SubmitQuizDto } from './dto/submit-quiz.dto';
+import { SaveQuizAttemptDto } from './dto/save-quiz-attempt.dto';
+import { ListSavedAttemptsQueryDto } from './dto/list-saved-attempts-query.dto';
 import { MedicalTopicKey } from '../common/enums/medical-topic.enum';
 import { PatientProfile } from '../common/enums/patient.enum';
 import { QuizLevel } from '../common/enums/quiz.enum';
 import { Public } from '../common/decorators/public.decorator';
 import { PatientLanguage } from '../common/enums/language.enum';
+import { Request } from 'express';
+import { JwtPayload } from '../auth/interfaces/jwt-payload.interface';
+import { AuthRole } from '../common/enums/auth-role.enum';
 
 @ApiTags('Quizzes')
 @Controller('quizzes')
@@ -158,5 +165,84 @@ export class QuizController {
   })
   submit(@Body() dto: SubmitQuizDto) {
     return this.quizService.submit(dto);
+  }
+
+  @Post('attempts/:attemptId/save')
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({
+    summary:
+      'Marquer une tentative terminee comme sauvegardee par le patient pour consultation ulterieure',
+  })
+  @ApiParam({ name: 'attemptId', example: '91af2c34-fbe7-4b9d-a67d-ff6bc89f9f13' })
+  @ApiBody({ type: SaveQuizAttemptDto })
+  @ApiResponse({
+    status: 201,
+    description:
+      'Tentative marquee comme sauvegardee avec le detail des questions/reponses (historique patient).',
+  })
+  saveAttempt(
+    @Param('attemptId', ParseUUIDPipe) attemptId: string,
+    @Body() dto: SaveQuizAttemptDto,
+  ) {
+    return this.quizService.saveAttemptForPatient(attemptId, dto.patientId);
+  }
+
+  @Get('patient/:patientId/saved-attempts')
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({
+    summary:
+      'Recuperer les derniers quiz termines d un patient avec questions/reponses',
+  })
+  @ApiParam({ name: 'patientId', example: '6f7f0eb2-8778-48e4-b7ba-84b61be7f819' })
+  @ApiQuery({
+    name: 'limit',
+    required: false,
+    example: 50,
+    description: 'Nombre maximum de quiz termines a retourner (1 a 200).',
+  })
+  @ApiResponse({
+    status: 200,
+    description:
+      'Liste des quiz termines (score + questions/reponses + bonnes reponses).',
+  })
+  listSavedAttempts(
+    @Param('patientId', ParseUUIDPipe) patientId: string,
+    @Query(new DefaultValuePipe({ limit: 50 })) query: ListSavedAttemptsQueryDto,
+  ) {
+    return this.quizService.listSavedAttemptsForPatient(patientId, query.limit ?? 50);
+  }
+
+  @Get('professional/patient/:patientId/saved-attempts')
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({
+    summary:
+      'Dashboard professionnel: recuperer les quiz enregistres d un patient assigne',
+  })
+  @ApiParam({ name: 'patientId', example: '6f7f0eb2-8778-48e4-b7ba-84b61be7f819' })
+  @ApiQuery({
+    name: 'limit',
+    required: false,
+    example: 2,
+    description: 'Nombre maximum de quiz enregistres a retourner (limite a 2 pour le dashboard professionnel).',
+  })
+  @ApiResponse({
+    status: 200,
+    description:
+      'Liste des quiz enregistres du patient pour aide a la decision clinique du professionnel.',
+  })
+  listSavedAttemptsForProfessional(
+    @Req() request: Request & { user: JwtPayload },
+    @Param('patientId', ParseUUIDPipe) patientId: string,
+    @Query(new DefaultValuePipe({ limit: 2 })) query: ListSavedAttemptsQueryDto,
+  ) {
+    if (request.user.role !== AuthRole.HEALTH_PROFESSIONAL) {
+      throw new ForbiddenException('Endpoint reserve aux professionnels de sante');
+    }
+
+    return this.quizService.listSavedAttemptsForProfessional({
+      professionalId: request.user.sub,
+      patientId,
+      limit: query.limit ?? 2,
+    });
   }
 }

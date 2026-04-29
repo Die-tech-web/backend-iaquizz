@@ -3,6 +3,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { IcdModule } from '../icd/icd.module';
 import { NotificationModule } from '../notification/notification.module';
 import { PatientModule } from '../patient/patient.module';
+import { ProfessionalModule } from '../professional/professional.module';
 import { QuizController } from './quiz.controller';
 import { QuizService } from './quiz.service';
 import { QuizLevelAdaptationService } from './quiz-level-adaptation.service';
@@ -25,6 +26,7 @@ import { QuizQuestionEntity } from './entities/quiz-question.entity';
     IcdModule,
     PatientModule,
     NotificationModule,
+    ProfessionalModule,
   ],
   controllers: [QuizController],
   providers: [QuizService, QuizLevelAdaptationService, QuizLocalizationService],

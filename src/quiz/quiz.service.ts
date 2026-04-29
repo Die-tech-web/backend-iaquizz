@@ -34,11 +34,13 @@ import {
 } from '../common/enums/quiz.enum';
 import { PatientProfile } from '../common/enums/patient.enum';
 import {
+  DEFAULT_PATIENT_LANGUAGE,
   PatientLanguage,
   resolvePatientLanguage,
 } from '../common/enums/language.enum';
 import { NotificationService } from '../notification/notification.service';
 import { QuizLocalizationService } from './quiz-localization.service';
+import { ProfessionalService } from '../professional/professional.service';
 
 export type QuizSubmissionResult = {
   id: string;
@@ -58,6 +60,30 @@ export type QuizSubmissionResult = {
   levelChanged: boolean;
   previousLevel: QuizLevel | null;
   congratulationMessage: string | null;
+  correctAnswersCount?: number;
+  totalQuestionsCount?: number;
+};
+
+export type QuizAttemptHistoryAnswer = {
+  questionId: string;
+  questionText: string;
+  selectedCodes: string[];
+  selectedLabels: string[];
+  correctCodes: string[];
+  correctLabels: string[];
+  isCorrect: boolean;
+};
+
+export type QuizAttemptHistoryItem = {
+  attemptId: string;
+  quizId: string;
+  quizTitle: string;
+  language: PatientLanguage;
+  savedAt: Date;
+  completedAt: Date | null;
+  scoreOnTen: number;
+  levelAtAttempt: QuizLevel;
+  answers: QuizAttemptHistoryAnswer[];
 };
 
 export type PatientRecommendedQuizzesResult = {
@@ -97,6 +123,7 @@ export class QuizService implements OnModuleInit {
     private readonly patientRepository: Repository<PatientEntity>,
     private readonly icdService: IcdService,
     private readonly patientService: PatientService,
+    private readonly professionalService: ProfessionalService,
     private readonly quizLevelAdaptationService: QuizLevelAdaptationService,
     private readonly quizLocalizationService: QuizLocalizationService,
     private readonly notificationService: NotificationService,
@@ -351,7 +378,6 @@ export class QuizService implements OnModuleInit {
       ? await this.questionRepository
           .createQueryBuilder('question')
           .where('question.id IN (:...submittedQuestionIds)', { submittedQuestionIds })
-          .andWhere('question.quiz_id = :quizId', { quizId: quiz.id })
           .getMany()
       : [];
     const questionMap = new Map(questions.map((question) => [question.id, question]));
@@ -370,6 +396,8 @@ export class QuizService implements OnModuleInit {
 
     let totalScore = 0;
     let maxScore = 0;
+    let correctAnswersCount = 0;
+    let totalQuestionsCount = 0;
 
     for (const submittedAnswer of dto.answers.slice(0, QuizService.QUESTIONS_PER_ATTEMPT)) {
       const question = questionMap.get(submittedAnswer.questionId);
@@ -377,9 +405,14 @@ export class QuizService implements OnModuleInit {
         continue;
       }
 
+      totalQuestionsCount += 1;
+
       const points = this.scoreAnswer(question, submittedAnswer.value);
       totalScore += points;
       maxScore += Number(question.weight);
+      if (this.isExactCorrectAnswer(question, submittedAnswer.value)) {
+        correctAnswersCount += 1;
+      }
 
       await this.answerRepository.save(
         this.answerRepository.create({
@@ -404,8 +437,8 @@ export class QuizService implements OnModuleInit {
       maxScore: Number(savedAttempt.maxScore ?? maxScore ?? 0),
     });
     const scoreOnTen =
-      progressionUpdate.maxScore > 0
-        ? Number(((progressionUpdate.score / progressionUpdate.maxScore) * 10).toFixed(2))
+      totalQuestionsCount > 0
+        ? Number(((correctAnswersCount / totalQuestionsCount) * 10).toFixed(2))
         : 0;
     await this.notificationService.createCriticalQuizNotifications({
       patient,
@@ -431,7 +464,89 @@ export class QuizService implements OnModuleInit {
       levelChanged: progressionUpdate.levelChanged,
       previousLevel: progressionUpdate.previousLevel,
       congratulationMessage: progressionUpdate.congratulationMessage,
+      correctAnswersCount,
+      totalQuestionsCount,
     };
+  }
+
+  async saveAttemptForPatient(attemptId: string, patientId: string): Promise<QuizAttemptHistoryItem> {
+    await this.patientService.findById(patientId);
+    const attempt = await this.attemptRepository.findOne({
+      where: {
+        id: attemptId,
+        patient: { id: patientId },
+        status: QuizAttemptStatus.COMPLETED,
+      },
+      relations: {
+        quiz: true,
+        answers: {
+          question: true,
+        },
+      },
+    });
+
+    if (!attempt) {
+      throw new NotFoundException(
+        `Attempt ${attemptId} not found for patient ${patientId} or not completed`,
+      );
+    }
+
+    if (!attempt.isSavedByPatient) {
+      attempt.isSavedByPatient = true;
+      attempt.savedAt = new Date();
+      await this.attemptRepository.save(attempt);
+    }
+
+    if (!attempt.savedAt) {
+      attempt.savedAt = new Date();
+    }
+
+    return this.toQuizAttemptHistoryItem(attempt);
+  }
+
+  async listSavedAttemptsForPatient(
+    patientId: string,
+    limit = 50,
+  ): Promise<QuizAttemptHistoryItem[]> {
+    await this.patientService.findById(patientId);
+    const safeLimit = Math.min(Math.max(limit, 1), 200);
+    const attempts = await this.attemptRepository.find({
+      where: {
+        patient: { id: patientId },
+        status: QuizAttemptStatus.COMPLETED,
+        isSavedByPatient: true,
+      },
+      relations: {
+        quiz: true,
+        answers: {
+          question: true,
+        },
+      },
+      order: {
+        savedAt: 'DESC',
+        completedAt: 'DESC',
+      },
+      take: safeLimit,
+    });
+
+    return attempts.map((attempt) => this.toQuizAttemptHistoryItem(attempt));
+  }
+
+  async listSavedAttemptsForProfessional(params: {
+    professionalId: string;
+    patientId: string;
+    limit?: number;
+  }): Promise<QuizAttemptHistoryItem[]> {
+    const assignedPatientIds = await this.professionalService.getPatientIdsForProfessional(
+      params.professionalId,
+    );
+    if (!assignedPatientIds.includes(params.patientId)) {
+      throw new ForbiddenException('Ce patient n est pas assigne a ce professionnel');
+    }
+
+    const requested = params.limit ?? 2;
+    const professionalLimit = Math.min(Math.max(requested, 1), 2);
+    return this.listSavedAttemptsForPatient(params.patientId, professionalLimit);
   }
 
   private async ensurePatientProgression(patient: PatientEntity): Promise<PatientProgressionEntity> {
@@ -646,6 +761,15 @@ export class QuizService implements OnModuleInit {
     return 0;
   }
 
+  private isExactCorrectAnswer(question: QuizQuestionEntity, values: string[]): boolean {
+    if (!question.options?.length) {
+      return false;
+    }
+
+    const expected = question.options.filter((option) => option.isCorrect).map((option) => option.code);
+    return values.slice().sort().join('|') === expected.slice().sort().join('|');
+  }
+
   private shuffle<T>(values: T[]): T[] {
     const buffer = [...values];
     for (let i = buffer.length - 1; i > 0; i -= 1) {
@@ -695,6 +819,72 @@ export class QuizService implements OnModuleInit {
       })
       .sort()
       .join('|');
+  }
+
+  private toQuizAttemptHistoryItem(attempt: QuizAttemptEntity): QuizAttemptHistoryItem {
+    const language = resolvePatientLanguage(attempt.language);
+    const answers = (attempt.answers ?? []).map((answer) => {
+      const question = answer.question;
+      const selectedCodes = answer.value ?? [];
+      const selectedCodeSet = new Set(selectedCodes);
+      const localizedOptions = (question.options ?? []).map((option) => ({
+        ...option,
+        label: this.pickLocalizedValue(option.label, option.labelI18n, language),
+      }));
+      const selectedLabels = localizedOptions
+        .filter((option) => selectedCodeSet.has(option.code))
+        .map((option) => option.label);
+      const correctOptions = localizedOptions.filter((option) => option.isCorrect);
+      const correctCodes = correctOptions.map((option) => option.code);
+      const correctLabels = correctOptions.map((option) => option.label);
+
+      return {
+        questionId: question.id,
+        questionText: this.pickLocalizedValue(question.text, question.textI18n, language),
+        selectedCodes,
+        selectedLabels,
+        correctCodes,
+        correctLabels,
+        isCorrect:
+          selectedCodes.slice().sort().join('|') === correctCodes.slice().sort().join('|'),
+      };
+    });
+
+    const score = Number(attempt.score ?? 0);
+    const maxScore = Number(attempt.maxScore ?? 0);
+    const scoreOnTen = maxScore > 0 ? Number(((score / maxScore) * 10).toFixed(2)) : 0;
+
+    return {
+      attemptId: attempt.id,
+      quizId: attempt.quiz.id,
+      quizTitle: this.pickLocalizedValue(attempt.quiz.title, attempt.quiz.titleI18n, language),
+      language,
+      savedAt: attempt.savedAt ?? attempt.completedAt ?? attempt.startedAt,
+      completedAt: attempt.completedAt,
+      scoreOnTen,
+      levelAtAttempt: attempt.levelAtAttempt ?? attempt.quiz.level,
+      answers,
+    };
+  }
+
+  private pickLocalizedValue(
+    baseValue: string,
+    i18nMap: Partial<Record<PatientLanguage, string>> | undefined,
+    language: PatientLanguage,
+  ): string {
+    const preferred = i18nMap?.[language];
+    if (preferred && preferred.trim()) {
+      return preferred;
+    }
+
+    if (language !== DEFAULT_PATIENT_LANGUAGE) {
+      const fallback = i18nMap?.[DEFAULT_PATIENT_LANGUAGE];
+      if (fallback && fallback.trim()) {
+        return fallback;
+      }
+    }
+
+    return baseValue;
   }
 
   private haveThemeOverlap(left: QuizTheme[], right: QuizTheme[]) {
