@@ -13,6 +13,7 @@ import { QuizModule } from './quiz/quiz.module';
 import { AuthModule } from './auth/auth.module';
 import { NotificationModule } from './notification/notification.module';
 import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
+import { TtsModule } from './tts/tts.module';
 
 @Module({
   imports: [
@@ -25,6 +26,7 @@ import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
     FhirModule,
     AuthModule,
     NotificationModule,
+    TtsModule,
   ],
   controllers: [AppController],
   providers: [
