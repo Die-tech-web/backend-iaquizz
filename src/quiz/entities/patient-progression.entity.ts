@@ -8,7 +8,7 @@ import {
   Unique,
   UpdateDateColumn,
 } from 'typeorm';
-import { QuizLevel } from '../../common/enums/quiz.enum';
+import { QuizLevel, QuizTheme } from '../../common/enums/quiz.enum';
 import { PatientEntity } from '../../patient/entities/patient.entity';
 
 @Entity('patient_progressions')
@@ -28,8 +28,20 @@ export class PatientProgressionEntity {
   @Column({ type: 'enum', enum: QuizLevel, default: QuizLevel.BEGINNER })
   currentLevel: QuizLevel;
 
+  @Column({ type: 'enum', enum: QuizTheme, default: QuizTheme.RISK_FACTORS })
+  currentModule: QuizTheme;
+
   @Column({ type: 'enum', enum: QuizLevel, nullable: true })
   nextLevel: QuizLevel | null;
+
+  @Column({ type: 'jsonb', default: () => "'{}'" })
+  validatedModulesByLevel: Record<string, QuizTheme[]>;
+
+  @Column({ type: 'jsonb', default: () => "'{}'" })
+  moduleScoresByLevel: Record<string, Record<string, number>>;
+
+  @Column({ type: 'jsonb', default: () => "'{}'" })
+  playedQuizIdsByLevelModule: Record<string, Record<string, string[]>>;
 
   @Column({ type: 'int', default: 0 })
   perfectScoresAtCurrentLevel: number;

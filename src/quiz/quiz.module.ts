@@ -8,6 +8,8 @@ import { QuizController } from './quiz.controller';
 import { QuizService } from './quiz.service';
 import { QuizLevelAdaptationService } from './quiz-level-adaptation.service';
 import { QuizLocalizationService } from './quiz-localization.service';
+import { ProgressionService } from './progression.service';
+import { QuizRandomizationService } from './quiz-randomization.service';
 import { QuizAnswerEntity } from './entities/quiz-answer.entity';
 import { QuizAttemptEntity } from './entities/quiz-attempt.entity';
 import { PatientProgressionEntity } from './entities/patient-progression.entity';
@@ -29,7 +31,13 @@ import { QuizQuestionEntity } from './entities/quiz-question.entity';
     ProfessionalModule,
   ],
   controllers: [QuizController],
-  providers: [QuizService, QuizLevelAdaptationService, QuizLocalizationService],
+  providers: [
+    QuizService,
+    QuizLevelAdaptationService,
+    QuizLocalizationService,
+    ProgressionService,
+    QuizRandomizationService,
+  ],
   exports: [QuizService, TypeOrmModule],
 })
 export class QuizModule {}

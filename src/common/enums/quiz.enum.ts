@@ -15,6 +15,17 @@ export enum QuizTheme {
   RISK_FACTORS = 'RISK_FACTORS',
 }
 
+export const QUIZ_THEME_PROGRESSION_ORDER: QuizTheme[] = [
+  QuizTheme.RISK_FACTORS,
+  QuizTheme.FOLLOW_UP,
+  QuizTheme.TREATMENT,
+  QuizTheme.NUTRITION,
+  QuizTheme.PREVENTION,
+  QuizTheme.ADHERENCE,
+  QuizTheme.COMPLICATIONS,
+  QuizTheme.LIFESTYLE,
+];
+
 export enum QuizQuestionType {
   SINGLE_CHOICE = 'SINGLE_CHOICE',
   MULTIPLE_CHOICE = 'MULTIPLE_CHOICE',

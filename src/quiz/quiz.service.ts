@@ -23,7 +23,6 @@ import {
 } from '../common/enums/medical-topic.enum';
 import {
   AdaptiveLevelDecision,
-  QuizLevelAdaptationService,
 } from './quiz-level-adaptation.service';
 import {
   QuizAttemptStatus,
@@ -41,6 +40,8 @@ import {
 import { NotificationService } from '../notification/notification.service';
 import { QuizLocalizationService } from './quiz-localization.service';
 import { ProfessionalService } from '../professional/professional.service';
+import { ProgressionService } from './progression.service';
+import { QuizRandomizationService } from './quiz-randomization.service';
 
 export type QuizSubmissionResult = {
   id: string;
@@ -51,7 +52,9 @@ export type QuizSubmissionResult = {
   status: QuizAttemptStatus;
   completedAt: Date | null;
   levelAtAttempt: QuizLevel;
+  moduleAtAttempt: QuizTheme | null;
   currentLevel: QuizLevel;
+  currentModule: QuizTheme;
   nextLevel: QuizLevel | null;
   progressionPercentage: number;
   perfectScoresAtCurrentLevel: number;
@@ -60,6 +63,15 @@ export type QuizSubmissionResult = {
   levelChanged: boolean;
   previousLevel: QuizLevel | null;
   congratulationMessage: string | null;
+  passed: boolean;
+  moduleCompleted: boolean;
+  levelCompleted: boolean;
+  perfectQuizRemaining: number | null;
+  toast: {
+    type: 'success' | 'warning' | 'info';
+    message: string;
+    duration: number;
+  } | null;
   correctAnswersCount?: number;
   totalQuestionsCount?: number;
 };
@@ -89,6 +101,7 @@ export type QuizAttemptHistoryItem = {
 export type PatientRecommendedQuizzesResult = {
   patientId: string;
   currentLevel: QuizLevel;
+  currentModule: QuizTheme;
   nextLevel: QuizLevel | null;
   progressionPercentage: number;
   perfectScoresAtCurrentLevel: number;
@@ -124,9 +137,10 @@ export class QuizService implements OnModuleInit {
     private readonly icdService: IcdService,
     private readonly patientService: PatientService,
     private readonly professionalService: ProfessionalService,
-    private readonly quizLevelAdaptationService: QuizLevelAdaptationService,
     private readonly quizLocalizationService: QuizLocalizationService,
     private readonly notificationService: NotificationService,
+    private readonly progressionService: ProgressionService,
+    private readonly quizRandomizationService: QuizRandomizationService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -209,34 +223,44 @@ export class QuizService implements OnModuleInit {
     dto: Omit<FilterQuizDto, 'patientId' | 'level' | 'autoLevel'> = {},
   ): Promise<PatientRecommendedQuizzesResult> {
     const patient = await this.patientService.findById(patientId);
-    const progression = await this.getAdaptiveLevelDecision(patientId);
-    const accessibleLevels = this.getAccessibleLevels(progression.currentLevel);
+    const progression = await this.ensurePatientProgression(patient);
+    const activeLevel = progression.currentLevel;
+    const activeModule = progression.currentModule;
     const list = await this.filter({
       ...dto,
       patientId,
       autoLevel: false,
+      level: activeLevel,
       patientProfile: dto.patientProfile ?? patient.profile,
     });
-    const allowed = list
-      .filter((quiz) => accessibleLevels.includes(quiz.level))
-      .sort((left, right) => {
-        const leftRank = QuizService.LEVEL_ORDER.indexOf(left.level);
-        const rightRank = QuizService.LEVEL_ORDER.indexOf(right.level);
-        if (leftRank !== rightRank) {
-          return leftRank - rightRank;
-        }
-        return left.title.localeCompare(right.title);
-      });
+    const moduleScoped = list.filter((quiz) => (quiz.themes ?? []).includes(activeModule));
+    const fallback = moduleScoped.length ? moduleScoped : list;
+    const attemptsAtCurrentModule = await this.attemptRepository.find({
+      where: {
+        patient: { id: patientId },
+        status: QuizAttemptStatus.COMPLETED,
+        levelAtAttempt: activeLevel,
+        moduleAtAttempt: activeModule,
+      },
+      relations: { quiz: true },
+      order: { completedAt: 'DESC', startedAt: 'DESC' },
+      take: 100,
+    });
+    const orderedForModule = this.quizRandomizationService.orderCandidatesForPatientModule({
+      candidates: fallback,
+      attempts: attemptsAtCurrentModule,
+    });
 
     return {
       patientId,
-      currentLevel: progression.currentLevel,
+      currentLevel: activeLevel,
+      currentModule: activeModule,
       nextLevel: progression.nextLevel,
       progressionPercentage: progression.progressionPercentage,
       perfectScoresAtCurrentLevel: progression.perfectScoresAtCurrentLevel,
       requiredPerfectScoresForNextLevel: progression.requiredPerfectScoresForNextLevel,
-      remainingPerfectScoresToUnlock: progression.remainingPerfectScoresToUnlock,
-      recommendations: allowed,
+      remainingPerfectScoresToUnlock: 0,
+      recommendations: orderedForModule,
     };
   }
 
@@ -300,47 +324,36 @@ export class QuizService implements OnModuleInit {
   private async resolveAdaptiveLevelDecision(patientId: string): Promise<AdaptiveLevelDecision> {
     const patient = await this.patientService.findById(patientId);
     const progression = await this.ensurePatientProgression(patient);
-    const attempts = await this.attemptRepository.find({
-      where: {
-        patient: { id: patientId },
-        status: QuizAttemptStatus.COMPLETED,
-      },
-      order: { completedAt: 'DESC' },
-      take: 50,
+    const completedAttempts = await this.attemptRepository.count({
+      where: { patient: { id: patientId }, status: QuizAttemptStatus.COMPLETED },
     });
-    const snapshots = attempts.map((attempt) => ({
-      levelAtAttempt: attempt.levelAtAttempt ?? attempt.quiz.level,
-      score: Number(attempt.score ?? 0),
-      maxScore: Number(attempt.maxScore ?? 10),
-      completedAt: attempt.completedAt ?? attempt.startedAt,
-    }));
-    const decision = this.quizLevelAdaptationService.decide(
-      snapshots,
-      progression.currentLevel ?? patient.currentLevel,
-    );
 
-    if (
-      progression.currentLevel !== decision.currentLevel ||
-      progression.nextLevel !== decision.nextLevel ||
-      Number(progression.progressionPercentage) !== decision.progressionPercentage ||
-      progression.perfectScoresAtCurrentLevel !== decision.perfectScoresAtCurrentLevel ||
-      progression.requiredPerfectScoresForNextLevel !== decision.requiredPerfectScoresForNextLevel
-    ) {
-      progression.currentLevel = decision.currentLevel;
-      progression.nextLevel = decision.nextLevel;
-      progression.progressionPercentage = decision.progressionPercentage;
-      progression.perfectScoresAtCurrentLevel = decision.perfectScoresAtCurrentLevel;
-      progression.requiredPerfectScoresForNextLevel = decision.requiredPerfectScoresForNextLevel;
-      progression.totalCompletedAttempts = decision.completedAttempts;
-      progression.totalPerfectScores = Object.values(decision.perfectScoresByLevel).reduce(
-        (sum, value) => sum + value,
-        0,
-      );
-      await this.progressionRepository.save(progression);
-    }
+    const remainingPerfectScoresToUnlock = 0;
+    const perfectScoresByLevel = {
+      [QuizLevel.BEGINNER]: 0,
+      [QuizLevel.INTERMEDIATE]: 0,
+      [QuizLevel.ADVANCED]: 0,
+    };
+
+    const decision: AdaptiveLevelDecision = {
+      currentLevel: progression.currentLevel,
+      recommendedLevel: progression.currentLevel,
+      nextLevel: progression.nextLevel,
+      progressionPercentage: Number(progression.progressionPercentage ?? 0),
+      perfectScoresAtCurrentLevel: 0,
+      requiredPerfectScoresForNextLevel: 0,
+      remainingPerfectScoresToUnlock,
+      completedAttempts,
+      perfectScoresByLevel,
+      overallSuccessRate: 0,
+      nextObjective: progression.nextLevel
+        ? `Valider le module ${progression.currentModule} avec au moins 8/10 pour progresser.`
+        : null,
+      rationale: this.progressionService.buildProgressRationale(progression),
+    };
 
     this.logger.log(
-      `Adaptive level decision for patient ${patientId}: current=${decision.currentLevel}, recommended=${decision.recommendedLevel}, attempts=${decision.completedAttempts}, progression=${decision.progressionPercentage}%`,
+      `Adaptive level decision for patient ${patientId}: current=${decision.currentLevel}, progression=${decision.progressionPercentage}%`,
     );
     return decision;
   }
@@ -361,15 +374,21 @@ export class QuizService implements OnModuleInit {
   async submit(dto: SubmitQuizDto): Promise<QuizSubmissionResult> {
     const patient = await this.patientService.findById(dto.patientId);
     const quiz = await this.findOne(dto.quizId);
-    const patientLevelIndex = QuizService.LEVEL_ORDER.indexOf(patient.currentLevel ?? QuizLevel.BEGINNER);
-    const quizLevelIndex = QuizService.LEVEL_ORDER.indexOf(quiz.level);
-    if (quizLevelIndex > patientLevelIndex) {
+    const progression = await this.ensurePatientProgression(patient);
+    const levelAtAttempt = progression.currentLevel;
+    const moduleAtAttempt = progression.currentModule;
+
+    if (quiz.level !== levelAtAttempt) {
       throw new ForbiddenException(
-        `Ce quiz (${quiz.level}) n'est pas encore debloque pour ce patient (niveau actuel ${patient.currentLevel}).`,
+        `Ce quiz (${quiz.level}) n'est pas accessible pour ce patient (niveau actuel ${levelAtAttempt}).`,
+      );
+    }
+    if (!(quiz.themes ?? []).includes(moduleAtAttempt)) {
+      throw new ForbiddenException(
+        `Ce quiz ne correspond pas au module courant ${moduleAtAttempt}.`,
       );
     }
 
-    const levelAtAttempt = patient.currentLevel ?? QuizLevel.BEGINNER;
     const submittedQuestionIds = dto.answers
       .slice(0, QuizService.QUESTIONS_PER_ATTEMPT)
       .map((answer) => answer.questionId);
@@ -390,6 +409,7 @@ export class QuizService implements OnModuleInit {
         quiz,
         status: QuizAttemptStatus.IN_PROGRESS,
         levelAtAttempt,
+        moduleAtAttempt,
         language,
       }),
     );
@@ -430,18 +450,24 @@ export class QuizService implements OnModuleInit {
     attempt.completedAt = new Date();
 
     const savedAttempt = await this.attemptRepository.save(attempt);
-    const progressionUpdate = await this.updateProgressionAfterSubmission({
-      patient,
-      levelAtAttempt,
-      score: Number(savedAttempt.score ?? 0),
-      maxScore: Number(savedAttempt.maxScore ?? maxScore ?? 0),
-    });
     const scoreOnTen =
       Number(savedAttempt.maxScore ?? 0) > 0
         ? Number(
             ((Number(savedAttempt.score ?? 0) / Number(savedAttempt.maxScore ?? 0)) * 10).toFixed(2),
           )
         : 0;
+
+    const progressionUpdate = await this.updateProgressionAfterSubmission({
+      patient,
+      progression,
+      levelAtAttempt,
+      moduleAtAttempt,
+      quizId: quiz.id,
+      score: Number(savedAttempt.score ?? 0),
+      maxScore: Number(savedAttempt.maxScore ?? 0),
+      scoreOnTen,
+    });
+
     await this.notificationService.createCriticalQuizNotifications({
       patient,
       attempt: savedAttempt,
@@ -457,7 +483,9 @@ export class QuizService implements OnModuleInit {
       status: savedAttempt.status,
       completedAt: savedAttempt.completedAt,
       levelAtAttempt,
+      moduleAtAttempt,
       currentLevel: progressionUpdate.currentLevel,
+      currentModule: progressionUpdate.currentModule,
       nextLevel: progressionUpdate.nextLevel,
       progressionPercentage: progressionUpdate.progressionPercentage,
       perfectScoresAtCurrentLevel: progressionUpdate.perfectScoresAtCurrentLevel,
@@ -466,6 +494,11 @@ export class QuizService implements OnModuleInit {
       levelChanged: progressionUpdate.levelChanged,
       previousLevel: progressionUpdate.previousLevel,
       congratulationMessage: progressionUpdate.congratulationMessage,
+      passed: progressionUpdate.passed,
+      moduleCompleted: progressionUpdate.moduleCompleted,
+      levelCompleted: progressionUpdate.levelCompleted,
+      perfectQuizRemaining: null,
+      toast: progressionUpdate.toast,
       correctAnswersCount,
       totalQuestionsCount,
     };
@@ -556,95 +589,87 @@ export class QuizService implements OnModuleInit {
       where: { patient: { id: patient.id } },
     });
     if (existing) {
-      return existing;
+      const before = JSON.stringify({
+        currentLevel: existing.currentLevel,
+        currentModule: existing.currentModule,
+        validatedModulesByLevel: existing.validatedModulesByLevel,
+        moduleScoresByLevel: existing.moduleScoresByLevel,
+        playedQuizIdsByLevelModule: existing.playedQuizIdsByLevelModule,
+        nextLevel: existing.nextLevel,
+      });
+      const normalizedExisting = this.progressionService.ensureDefaults(existing);
+      const after = JSON.stringify({
+        currentLevel: normalizedExisting.currentLevel,
+        currentModule: normalizedExisting.currentModule,
+        validatedModulesByLevel: normalizedExisting.validatedModulesByLevel,
+        moduleScoresByLevel: normalizedExisting.moduleScoresByLevel,
+        playedQuizIdsByLevelModule: normalizedExisting.playedQuizIdsByLevelModule,
+        nextLevel: normalizedExisting.nextLevel,
+      });
+      if (before !== after) {
+        await this.progressionRepository.save(normalizedExisting);
+      }
+      return normalizedExisting;
     }
 
-    const attempts = await this.attemptRepository.find({
-      where: {
-        patient: { id: patient.id },
-        status: QuizAttemptStatus.COMPLETED,
-      },
-      order: { completedAt: 'DESC' },
-      take: 200,
-    });
-    const snapshots = attempts.map((attempt) => ({
-      levelAtAttempt: attempt.levelAtAttempt ?? attempt.quiz.level,
-      score: Number(attempt.score ?? 0),
-      maxScore: Number(attempt.maxScore ?? 10),
-      completedAt: attempt.completedAt ?? attempt.startedAt,
-    }));
-    const decision = this.quizLevelAdaptationService.decide(snapshots, patient.currentLevel);
     const progression = this.progressionRepository.create({
       patient,
-      currentLevel: decision.currentLevel,
-      nextLevel: decision.nextLevel,
-      perfectScoresAtCurrentLevel: decision.perfectScoresAtCurrentLevel,
-      requiredPerfectScoresForNextLevel: decision.requiredPerfectScoresForNextLevel,
-      progressionPercentage: decision.progressionPercentage,
-      totalCompletedAttempts: decision.completedAttempts,
-      totalPerfectScores: Object.values(decision.perfectScoresByLevel).reduce(
-        (sum, value) => sum + value,
-        0,
-      ),
+      currentLevel: patient.currentLevel ?? QuizLevel.BEGINNER,
+      currentModule: this.progressionService.getModuleOrder()[0],
+      nextLevel: this.progressionService.getNextLevel(patient.currentLevel ?? QuizLevel.BEGINNER),
+      validatedModulesByLevel: {},
+      moduleScoresByLevel: {},
+      playedQuizIdsByLevelModule: {},
+      perfectScoresAtCurrentLevel: 0,
+      requiredPerfectScoresForNextLevel: 0,
+      progressionPercentage: 0,
+      totalCompletedAttempts: 0,
+      totalPerfectScores: 0,
       lastLevelUpAt: null,
     });
-    if (patient.currentLevel !== decision.currentLevel) {
-      patient.currentLevel = decision.currentLevel;
+    if (patient.currentLevel !== progression.currentLevel) {
+      patient.currentLevel = progression.currentLevel;
       await this.patientRepository.save(patient);
     }
-    return this.progressionRepository.save(progression);
+    return this.progressionRepository.save(this.progressionService.ensureDefaults(progression));
   }
 
   private async updateProgressionAfterSubmission(params: {
     patient: PatientEntity;
+    progression: PatientProgressionEntity;
     levelAtAttempt: QuizLevel;
+    moduleAtAttempt: QuizTheme;
+    quizId: string;
     score: number;
     maxScore: number;
+    scoreOnTen: number;
   }) {
-    const progression = await this.ensurePatientProgression(params.patient);
-    const score = Number(params.score ?? 0);
-    const maxScore = Number(params.maxScore ?? 0);
-    const isPerfect = maxScore > 0 && score >= maxScore - 0.001;
+    const progression = this.progressionService.ensureDefaults(params.progression);
+    const previousLevel = progression.currentLevel;
 
     progression.totalCompletedAttempts += 1;
-    if (isPerfect) {
+    this.progressionService.registerPlayedQuiz(
+      progression,
+      params.levelAtAttempt,
+      params.moduleAtAttempt,
+      params.quizId,
+    );
+
+    const outcome = this.progressionService.applySubmissionResult({
+      progression,
+      levelAtAttempt: params.levelAtAttempt,
+      moduleAtAttempt: params.moduleAtAttempt,
+      scoreOnTen: params.scoreOnTen,
+    });
+
+    if (params.scoreOnTen >= 9.999) {
       progression.totalPerfectScores += 1;
     }
 
-    let previousLevel: QuizLevel | null = null;
-    let congratulationMessage: string | null = null;
-    let levelChanged = false;
-
-    if (params.levelAtAttempt === progression.currentLevel && isPerfect) {
-      progression.perfectScoresAtCurrentLevel += 1;
-    }
-
-    const required = this.quizLevelAdaptationService.getRequiredPerfectScores(progression.currentLevel);
-    const next = this.quizLevelAdaptationService.getNextLevel(progression.currentLevel);
-
-    progression.requiredPerfectScoresForNextLevel = required;
-    progression.nextLevel = next;
-    progression.progressionPercentage = next
-      ? Number(
-          (
-            (Math.min(progression.perfectScoresAtCurrentLevel, required) / Math.max(required, 1)) *
-            100
-          ).toFixed(2),
-        )
-      : 100;
-
-    if (next && progression.perfectScoresAtCurrentLevel >= required) {
-      previousLevel = progression.currentLevel;
-      progression.currentLevel = next;
-      progression.nextLevel = this.quizLevelAdaptationService.getNextLevel(next);
-      progression.perfectScoresAtCurrentLevel = 0;
-      progression.requiredPerfectScoresForNextLevel =
-        this.quizLevelAdaptationService.getRequiredPerfectScores(next);
-      progression.progressionPercentage = progression.nextLevel ? 0 : 100;
-      progression.lastLevelUpAt = new Date();
-      levelChanged = true;
-      congratulationMessage = this.quizLevelAdaptationService.buildLevelUpMessage(previousLevel, next);
-    }
+    const levelChanged = previousLevel !== progression.currentLevel;
+    const congratulationMessage = levelChanged ? outcome.toast.message : null;
+    const score = Number(params.score ?? 0);
+    const maxScore = Number(params.maxScore ?? 0);
 
     if (params.patient.currentLevel !== progression.currentLevel) {
       params.patient.currentLevel = progression.currentLevel;
@@ -657,19 +682,19 @@ export class QuizService implements OnModuleInit {
       score,
       maxScore,
       currentLevel: progression.currentLevel,
+      currentModule: progression.currentModule,
       nextLevel: progression.nextLevel,
       progressionPercentage: Number(progression.progressionPercentage),
       perfectScoresAtCurrentLevel: progression.perfectScoresAtCurrentLevel,
       requiredPerfectScoresForNextLevel: progression.requiredPerfectScoresForNextLevel,
-      remainingPerfectScoresToUnlock: progression.nextLevel
-        ? Math.max(
-            progression.requiredPerfectScoresForNextLevel - progression.perfectScoresAtCurrentLevel,
-            0,
-          )
-        : 0,
+      remainingPerfectScoresToUnlock: 0,
       levelChanged,
-      previousLevel,
+      previousLevel: levelChanged ? previousLevel : null,
       congratulationMessage,
+      passed: outcome.passed,
+      moduleCompleted: outcome.moduleCompleted,
+      levelCompleted: outcome.levelCompleted,
+      toast: outcome.toast,
     };
   }
 
@@ -1962,8 +1987,6 @@ export class QuizService implements OnModuleInit {
       const focus = focusLabels[(series - 1) % focusLabels.length];
       const moduleChoiceText = `Dans le module ${blueprint.title.toLowerCase()}, quel choix est le plus adapte ${scenario.fr} ?`;
       const moduleChoiceTextEn = `In the ${blueprint.titleEn.toLowerCase()} module, which choice is most appropriate ${scenario.en}?`;
-      const imageInstruction = 'Choisissez l image qui montre la conduite la plus adaptee.';
-      const imageInstructionEn = 'Choose the image that shows the most appropriate action.';
       const isSensitive = sensitiveThemes.has(blueprint.theme);
       const wrongALower = blueprint.wrongA.toLowerCase();
       const wrongALowerEn = blueprint.wrongAEn.toLowerCase();
@@ -1971,52 +1994,6 @@ export class QuizService implements OnModuleInit {
       const baseQuestionEn = blueprint.questionTextEn.replace(/\?+\s*$/, '').trim();
       const contextualQuestionFr = `${baseQuestionFr} ${focus.fr} ?`;
       const contextualQuestionEn = `${baseQuestionEn} ${focus.en}?`;
-      const visualVariant = ((blueprintIndex + series - 1) % 4) + 1;
-      const contextualQuestionImageByFocus: Record<
-        string,
-        { url: string; alt: string; altEn: string }
-      > = {
-        'quand les resultats biologiques evoluent': {
-          url: '/quiz-images/question-lab-monitoring.svg',
-          alt: 'Illustration de suivi des resultats biologiques.',
-          altEn: 'Illustration of laboratory result monitoring.',
-        },
-      };
-      const contextualQuestionImage =
-        contextualQuestionImageByFocus[focus.fr] ??
-        ({
-          url: blueprint.questionImageUrl,
-          alt: blueprint.questionImageAlt,
-          altEn: blueprint.questionImageAltEn,
-        } as const);
-      const isAlertSymptomContext = [
-        'en presence de crampes nocturnes',
-        'lors d un essoufflement inhabituel',
-        'apres apparition d un oedeme des membres inferieurs',
-      ].includes(focus.fr);
-      const isFatigueContext = focus.fr === 'durant une semaine de fatigue persistante';
-      const isHypertensionContext = focus.fr === 'devant une tension arterielle elevee';
-      const safeOptionImageUrl = isFatigueContext
-        ? '/quiz-images/option-fatigue-good.svg'
-        : isHypertensionContext
-          ? '/quiz-images/option-hypertension-good.svg'
-        : isAlertSymptomContext
-          ? '/quiz-images/option-alert-good.svg'
-          : `/quiz-images/option-safe-action-v${visualVariant}.svg`;
-      const riskOptionImageUrl = isFatigueContext
-        ? '/quiz-images/option-fatigue-risky.svg'
-        : isHypertensionContext
-          ? '/quiz-images/option-hypertension-risky.svg'
-        : isAlertSymptomContext
-          ? '/quiz-images/option-alert-risky.svg'
-          : `/quiz-images/option-risk-action-v${visualVariant}.svg`;
-      const noFollowupImageUrl = isFatigueContext
-        ? '/quiz-images/option-fatigue-intermediate.svg'
-        : isHypertensionContext
-          ? '/quiz-images/option-hypertension-intermediate.svg'
-        : isAlertSymptomContext
-          ? '/quiz-images/option-alert-intermediate.svg'
-          : `/quiz-images/option-no-followup-v${visualVariant}.svg`;
 
       return [
         {
@@ -2025,11 +2002,11 @@ export class QuizService implements OnModuleInit {
           textI18n: { en: `${contextualQuestionEn} (Quiz ${series})` },
           promptText: isSensitive ? contextualQuestionFr : null,
           promptTextI18n: isSensitive ? { en: contextualQuestionEn } : {},
-          audioText: `${contextualQuestionFr} ${imageInstruction}`,
-          audioTextI18n: { en: `${contextualQuestionEn} ${imageInstructionEn}` },
-          imageUrl: contextualQuestionImage.url,
-          imageAlt: contextualQuestionImage.alt,
-          imageAltI18n: { en: contextualQuestionImage.altEn },
+          audioText: contextualQuestionFr,
+          audioTextI18n: { en: contextualQuestionEn },
+          imageUrl: null,
+          imageAlt: null,
+          imageAltI18n: {},
           isSensitiveMedical: isSensitive,
           type: QuizQuestionType.SINGLE_CHOICE,
           weight: 1,
@@ -2039,27 +2016,18 @@ export class QuizService implements OnModuleInit {
               label: blueprint.correctLabel,
               labelI18n: { en: blueprint.correctLabelEn },
               isCorrect: true,
-              imageUrl: safeOptionImageUrl,
-              imageAlt: `Illustration: ${blueprint.correctLabel}`,
-              imageAltI18n: { en: `Illustration: ${blueprint.correctLabelEn}` },
             },
             {
               code: 'B',
               label: blueprint.wrongA,
               labelI18n: { en: blueprint.wrongAEn },
               isCorrect: false,
-              imageUrl: riskOptionImageUrl,
-              imageAlt: `Illustration: ${blueprint.wrongA}`,
-              imageAltI18n: { en: `Illustration: ${blueprint.wrongAEn}` },
             },
             {
               code: 'C',
               label: blueprint.wrongB,
               labelI18n: { en: blueprint.wrongBEn },
               isCorrect: false,
-              imageUrl: noFollowupImageUrl,
-              imageAlt: `Illustration: ${blueprint.wrongB}`,
-              imageAltI18n: { en: `Illustration: ${blueprint.wrongBEn}` },
             },
           ],
         },
