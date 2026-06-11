@@ -1745,9 +1745,6 @@ export class QuizService implements OnModuleInit {
       descriptionEn: string;
       questionText: string;
       questionTextEn: string;
-      questionImageUrl: string;
-      questionImageAlt: string;
-      questionImageAltEn: string;
       correctLabel: string;
       correctLabelEn: string;
       wrongA: string;
@@ -1765,9 +1762,6 @@ export class QuizService implements OnModuleInit {
         descriptionEn: 'Key regular follow-up actions to protect kidney function.',
         questionText: 'Quel reflexe de suivi est prioritaire en insuffisance renale chronique ?',
         questionTextEn: 'Which follow-up habit is a priority in chronic kidney disease?',
-        questionImageUrl: '/quiz-images/question-follow-up.svg',
-        questionImageAlt: 'Illustration d un suivi medical planifie.',
-        questionImageAltEn: 'Illustration of scheduled medical follow-up.',
         correctLabel: 'Controles reguliers et suivi medical planifie',
         correctLabelEn: 'Regular check-ups and planned medical follow-up',
         wrongA: 'Arreter le suivi en absence de symptomes',
@@ -1785,9 +1779,6 @@ export class QuizService implements OnModuleInit {
         descriptionEn: 'Identify factors that accelerate kidney disease progression.',
         questionText: 'Quel facteur augmente clairement le risque de degradation renale ?',
         questionTextEn: 'Which factor clearly increases the risk of kidney deterioration?',
-        questionImageUrl: '/quiz-images/question-risk-factors.svg',
-        questionImageAlt: 'Illustration des facteurs de risque a surveiller.',
-        questionImageAltEn: 'Illustration of risk factors to monitor.',
         correctLabel: 'HTA non controlee et diabete mal equilibre',
         correctLabelEn: 'Uncontrolled hypertension and poorly controlled diabetes',
         wrongA: 'Activite physique adaptee',
@@ -1805,9 +1796,6 @@ export class QuizService implements OnModuleInit {
         descriptionEn: 'Prevention measures to reduce cardio-kidney complications.',
         questionText: 'Quelle mesure est la plus utile en prevention renale ?',
         questionTextEn: 'Which measure is most useful for kidney prevention?',
-        questionImageUrl: '/quiz-images/question-prevention.svg',
-        questionImageAlt: 'Illustration de gestes de prevention renale.',
-        questionImageAltEn: 'Illustration of kidney prevention actions.',
         correctLabel: 'Surveillance tensionnelle et hygiene de vie',
         correctLabelEn: 'Blood pressure monitoring and healthy lifestyle',
         wrongA: 'Automedication prolongee',
@@ -1825,9 +1813,6 @@ export class QuizService implements OnModuleInit {
         descriptionEn: 'Strengthen adherence to nephrology treatments.',
         questionText: 'En cas d oubli de traitement repete, quelle conduite est adaptee ?',
         questionTextEn: 'In case of repeated missed medication, what is the appropriate action?',
-        questionImageUrl: '/quiz-images/question-adherence.svg',
-        questionImageAlt: 'Illustration d adherence au traitement.',
-        questionImageAltEn: 'Illustration of treatment adherence.',
         correctLabel: 'Prevenir l equipe soignante rapidement',
         correctLabelEn: 'Inform the care team quickly',
         wrongA: 'Doubler les doses sans avis',
@@ -1845,9 +1830,6 @@ export class QuizService implements OnModuleInit {
         descriptionEn: 'Understand the fundamentals of kidney treatments.',
         questionText: 'Quel comportement ameliore la securite du traitement ?',
         questionTextEn: 'Which behavior improves treatment safety?',
-        questionImageUrl: '/quiz-images/question-treatment.svg',
-        questionImageAlt: 'Illustration de traitement medical securise.',
-        questionImageAltEn: 'Illustration of safe medical treatment.',
         correctLabel: 'Respecter prescription et bilans de controle',
         correctLabelEn: 'Follow prescriptions and monitoring tests',
         wrongA: 'Modifier le traitement seul',
@@ -1865,9 +1847,6 @@ export class QuizService implements OnModuleInit {
         descriptionEn: 'Adapted nutrition to reduce overload and complications.',
         questionText: 'Quel conseil nutritionnel est pertinent en IRC ?',
         questionTextEn: 'Which nutrition advice is relevant in CKD?',
-        questionImageUrl: '/quiz-images/question-nutrition.svg',
-        questionImageAlt: 'Illustration de nutrition adaptee en insuffisance renale.',
-        questionImageAltEn: 'Illustration of adapted nutrition in kidney disease.',
         correctLabel: 'Limiter le sel selon avis medical',
         correctLabelEn: 'Limit salt according to medical advice',
         wrongA: 'Consommer du sel librement',
@@ -1885,9 +1864,6 @@ export class QuizService implements OnModuleInit {
         descriptionEn: 'Lifestyle habits compatible with long-term kidney follow-up.',
         questionText: 'Quelle habitude de vie aide le plus le parcours renal ?',
         questionTextEn: 'Which lifestyle habit helps the kidney care journey the most?',
-        questionImageUrl: '/quiz-images/question-lifestyle.svg',
-        questionImageAlt: 'Illustration d habitudes de vie benefiques.',
-        questionImageAltEn: 'Illustration of beneficial lifestyle habits.',
         correctLabel: 'Routine de suivi, activite et repos adaptes',
         correctLabelEn: 'Follow-up routine, adapted activity and rest',
         wrongA: 'Ignorer fatigue et symptomes',
@@ -1905,9 +1881,6 @@ export class QuizService implements OnModuleInit {
         descriptionEn: 'Recognize early warning signs linked to complications.',
         questionText: 'Quel signe impose un signalement rapide a l equipe soignante ?',
         questionTextEn: 'Which sign requires rapid reporting to the care team?',
-        questionImageUrl: '/quiz-images/question-complications.svg',
-        questionImageAlt: 'Illustration de signes d alerte a signaler.',
-        questionImageAltEn: 'Illustration of warning signs to report.',
         correctLabel: 'Malaise, dyspnee ou crampes marquees',
         correctLabelEn: 'Malaise, shortness of breath, or marked cramps',
         wrongA: 'Faim passagere',
